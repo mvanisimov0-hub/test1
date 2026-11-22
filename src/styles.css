@@ -147,6 +147,16 @@ textarea {
   outline-offset: 1px;
 }
 
+/* полоса под системной строкой телефона — в цвет шапки */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0 0 auto;
+  height: env(safe-area-inset-top, 0px);
+  z-index: 10;
+  background: var(--header);
+}
+
 /* ── шапка ── */
 .topbar {
   background: var(--header);

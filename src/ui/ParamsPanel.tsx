@@ -146,7 +146,8 @@ export function ParamsPanel() {
   const canopy = p.envelope.walls === 'none';
   const entity = calc.entity;
 
-  const setType = (type: BuildingType) => replace({ ...applyPreset(p, type), updatedAt: new Date().toISOString() });
+  const setType = (type: BuildingType) =>
+    replace({ ...applyPreset(p, type), name: p.name.startsWith('Пример:') ? '' : p.name, updatedAt: new Date().toISOString() });
 
   const applyRecommended = () =>
     patch((d) => {

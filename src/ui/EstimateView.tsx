@@ -75,7 +75,9 @@ export function EstimateView() {
               Печать сметы для клиента
             </button>
           </>
-        ) : null}
+        ) : (
+          <span className="muted small">Excel и печать работают в полной версии модуля</span>
+        )}
       </div>
       {error ? <div className="notice bad no-print">{error}</div> : null}
 
