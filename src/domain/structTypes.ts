@@ -2,6 +2,7 @@
 
 import type { CheckItem } from './checks';
 import type { GroupKey } from './frameModel';
+import type { OpeningInstance } from './geometry';
 import type { SectionFamily } from './sections';
 import type { BaseFix, FrameTech, RoofScheme } from './types';
 
@@ -163,6 +164,10 @@ export interface StructureResult {
   foundationLoads: FoundationLoad[];
   /** усилия от продольных связей на колонны связевых блоков, кН */
   braceReaction: { horizontal: number; vertical: number };
+  /** сопряжение ферм с колоннами жёсткое */
+  trussRigid: boolean;
+  /** раскладка проёмов по стенам с учётом положения колонн */
+  openings: OpeningInstance[];
   elements: Element3D[];
   spec: SpecRow[];
   columns: ColumnPoint[];

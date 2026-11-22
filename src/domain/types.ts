@@ -34,6 +34,9 @@ export type SteelGrade = 'C255' | 'C345';
 export type Coating = 'primer' | 'enamel' | 'zinc';
 export type VatMode = 'none' | 'included';
 export type ColumnProfileChoice = 'auto' | 'tube' | 'ibeam';
+/** сопряжение фермы с колонной: шарнирное или жёсткое (ферма крепится в двух уровнях) */
+export type TrussJoint = 'hinged' | 'rigid';
+export type TrussJointChoice = 'auto' | TrussJoint;
 
 export type OpeningKind = 'gate' | 'door' | 'window';
 
@@ -101,6 +104,7 @@ export interface FrameOptions {
   step: number | null;
   roofScheme: RoofSchemeChoice;
   base: BaseFixChoice;
+  trussJoint: TrussJointChoice;
   columnProfile: ColumnProfileChoice;
   steel: SteelGrade;
   coating: Coating;

@@ -104,13 +104,14 @@ function condense(k: number[][], f: number[] | null, r: number): void {
   const krr = k[r][r];
   if (Math.abs(krr) < 1e-30) return;
   const col = k.map((row) => row[r]);
+  const rowR = [...k[r]];
   if (f) {
     const fr = f[r];
     for (let i = 0; i < 6; i++) f[i] -= (col[i] * fr) / krr;
     f[r] = 0;
   }
   for (let i = 0; i < 6; i++) {
-    for (let j = 0; j < 6; j++) k[i][j] -= (col[i] * k[r][j]) / krr;
+    for (let j = 0; j < 6; j++) k[i][j] -= (col[i] * rowR[j]) / krr;
   }
   // после вычитания строка и столбец r обнуляются
   for (let i = 0; i < 6; i++) {

@@ -17,6 +17,18 @@ export type GroupKey =
   | 'floorBeam'
   | 'floorPost';
 
+export const GROUP_LABEL: Record<GroupKey, string> = {
+  colOuter: 'Колонны крайних рядов',
+  colInner: 'Колонны средних рядов',
+  topChord: 'Верхний пояс ферм',
+  botChord: 'Нижний пояс ферм',
+  webSup: 'Опорные раскосы и стойки ферм',
+  web: 'Решётка ферм',
+  rafter: 'Ригели рам',
+  floorBeam: 'Главные балки перекрытия',
+  floorPost: 'Стойки перекрытия',
+};
+
 export type MemberPart = 'column' | 'top' | 'bottom' | 'vertical' | 'diagonal' | 'rafter' | 'floorBeam' | 'post';
 
 export interface PlaneMember {
@@ -40,7 +52,14 @@ export interface ColumnLine {
   nodes: number[];
   levels: number[];
   members: number[];
+  /** отметка верха колонны */
   height: number;
+  /** отметка опирания несущей конструкции покрытия (для расчётной длины) */
+  clear: number;
+  /** высота стены над оголовком колонны, м */
+  wallExtra: number;
+  /** узел крепления нижнего пояса фермы или ригеля */
+  seat: number;
   craneNode: number | null;
 }
 
@@ -96,6 +115,7 @@ export interface PlaneFrame {
   craneLevel: number | null;
   withFloors: boolean;
   sideBraced: boolean;
+  trussRigid: boolean;
 }
 
 export interface FrameBuildOptions {
@@ -108,6 +128,8 @@ export interface FrameBuildOptions {
   maxPurlin: number;
   /** связевая схема: верх колонн раскреплён связями покрытия и торцов */
   sideBraced: boolean;
+  /** жёсткое сопряжение ферм с крайними колоннами */
+  trussRigid: boolean;
 }
 
 const up5 = (v: number) => Math.ceil(v * 20 - 1e-9) / 20;
@@ -176,8 +198,11 @@ export function buildPlaneFrame(b: Building, o: FrameBuildOptions): PlaneFrame {
   const columns: ColumnLine[] = [];
   for (let j = 0; j <= nSpans; j++) {
     const z = j * Ls;
-    const top = colTopY(z);
-    const set = new Set<number>([0, top]);
+    const outer = j === 0 || j === nSpans;
+    const seatY = colTopY(z);
+    // при жёстком сопряжении крайняя колонна доходит до верхнего пояса фермы
+    const top = truss && o.trussRigid && outer ? yTop(z) : seatY;
+    const set = new Set<number>([0, seatY, top]);
     for (const lv of floorLevels) if (lv < top - 0.2) set.add(lv);
     if (craneLevel != null && craneLevel < top - 0.2) set.add(craneLevel);
     const levels = [...set].sort((a, c) => a - c);
@@ -190,7 +215,6 @@ export function buildPlaneFrame(b: Building, o: FrameBuildOptions): PlaneFrame {
       const held = floorLevels.some((lv) => Math.abs(lv - y) < 1e-6) || (o.sideBraced && j === 0 && i === levels.length - 1);
       return addNode(z, y, held ? [true, false, false] : undefined);
     });
-    const outer = j === 0 || j === nSpans;
     const ms: number[] = [];
     for (let i = 0; i < ns.length - 1; i++) ms.push(addMember(ns[i], ns[i + 1], outer ? 'colOuter' : 'colInner', 'column', j));
     columns.push({
@@ -202,10 +226,14 @@ export function buildPlaneFrame(b: Building, o: FrameBuildOptions): PlaneFrame {
       levels,
       members: ms,
       height: top,
+      clear: seatY,
+      wallExtra: truss ? yTop(z) - top : roofOffset,
+      seat: ns[levels.findIndex((l) => Math.abs(l - seatY) < 1e-6)],
       craneNode: craneLevel != null && set.has(craneLevel) ? ns[levels.indexOf(craneLevel)] : null,
     });
   }
-  const colTop = columns.map((c) => c.nodes[c.nodes.length - 1]);
+  const colTop = columns.map((c) => c.seat);
+  const rigidTop = (j: number) => (truss && o.trussRigid && columns[j].outer ? columns[j].nodes[columns[j].nodes.length - 1] : null);
   const levelNode = (c: ColumnLine, y: number) => c.nodes[c.levels.findIndex((l) => Math.abs(l - y) < 1e-6)];
 
   // покрытие
@@ -228,13 +256,18 @@ export function buildPlaneFrame(b: Building, o: FrameBuildOptions): PlaneFrame {
       for (let i = 0; i <= n; i++) {
         const z = zA + i * p;
         bottomNodes.push(i === 0 ? colTop[s] : i === n ? colTop[s + 1] : addNode(z, yBot(z)));
-        roofNodes.push(addNode(z, yTop(z)));
+        const shared = i === 0 ? rigidTop(s) : i === n ? rigidTop(s + 1) : null;
+        roofNodes.push(shared ?? addNode(z, yTop(z)));
       }
+      const rigidL = rigidTop(s) != null;
+      const rigidR = rigidTop(s + 1) != null;
       for (let i = 0; i < n; i++) {
         ms.push(addMember(bottomNodes[i], bottomNodes[i + 1], 'botChord', 'bottom', s, i === 0, i === n - 1));
-        ms.push(addMember(roofNodes[i], roofNodes[i + 1], 'topChord', 'top', s));
+        ms.push(addMember(roofNodes[i], roofNodes[i + 1], 'topChord', 'top', s, i === 0 && rigidL, i === n - 1 && rigidR));
       }
       for (let i = 0; i <= n; i++) {
+        // при жёстком сопряжении опорной стойкой служит сама колонна
+        if ((i === 0 && rigidL) || (i === n && rigidR)) continue;
         ms.push(addMember(bottomNodes[i], roofNodes[i], i === 0 || i === n ? 'webSup' : 'web', 'vertical', s, true, true));
       }
       for (let i = 0; i < n; i++) {
@@ -336,6 +369,7 @@ export function buildPlaneFrame(b: Building, o: FrameBuildOptions): PlaneFrame {
     craneLevel,
     withFloors,
     sideBraced: o.sideBraced,
+    trussRigid: truss && o.trussRigid,
   };
 }
 
@@ -416,7 +450,7 @@ function deadCase(b: Building, f: PlaneFrame, li: LoadInput, norm: boolean): Loa
     const wall = norm ? li.wallN : li.wall;
     for (const c of f.columns) {
       if (!c.outer) continue;
-      lc.nodal.push({ node: c.nodes[c.nodes.length - 1], fx: 0, fy: -wall * li.step * (c.height + f.roofOffset), mz: 0 });
+      lc.nodal.push({ node: c.nodes[c.nodes.length - 1], fx: 0, fy: -wall * li.step * (c.height + c.wallExtra), mz: 0 });
     }
   }
   const fd = norm ? li.floorDeadN : li.floorDead;
@@ -464,7 +498,7 @@ function windCase(b: Building, f: PlaneFrame, li: LoadInput, dir: 1 | -1, canopy
     const q = dir * coef * li.wind * li.step;
     for (const idx of col.members) lc.dist.push({ elem: idx, qx: q, qy: 0 });
     // стена выше оголовка колонны (опорная часть фермы)
-    lc.nodal.push({ node: col.nodes[col.nodes.length - 1], fx: q * f.roofOffset, fy: 0, mz: 0 });
+    lc.nodal.push({ node: col.nodes[col.nodes.length - 1], fx: q * col.wallExtra, fy: 0, mz: 0 });
   };
   load(windwardCol, WALL_WIND.windward);
   load(leewardCol, -WALL_WIND.leeward);

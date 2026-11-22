@@ -76,6 +76,39 @@ describe('МКЭ: сверка с аналитическими решениям�
     expect(r.reactions[4]).toBeCloseTo((3 * q * L) / 8, 6);
   });
 
+  it('балка «шарнир — заделка» (шарнир в начале стержня): те же значения зеркально', () => {
+    const L = 8;
+    const q = 3;
+    const m = new FemModel(
+      [
+        { x: 0, y: 0, fix: [true, true, true] },
+        { x: L, y: 0, fix: [true, true, true] },
+      ],
+      [{ n1: 0, n2: 1, EA, EI, rel1: true }],
+    );
+    const r = m.solve({ nodal: [], dist: [{ elem: 0, qx: 0, qy: -q }] });
+    expect(forcesAt(r.elems[0], 0).M).toBeCloseTo(0, 6);
+    expect(forcesAt(r.elems[0], L).M).toBeCloseTo((-q * L * L) / 8, 6);
+    expect(r.reactions[1]).toBeCloseTo((3 * q * L) / 8, 6);
+    expect(r.reactions[4]).toBeCloseTo((5 * q * L) / 8, 6);
+  });
+
+  it('консоль с шарниром в начале второго стержня: момент через шарнир не передаётся', () => {
+    // заделка — стержень — шарнир — стержень — шарнирная опора; сила в шарнире
+    const m = new FemModel(
+      [{ x: 0, y: 0, fix: [true, true, true] }, { x: 3, y: 0 }, { x: 6, y: 0, fix: [false, true, false] }],
+      [
+        { n1: 0, n2: 1, EA, EI },
+        { n1: 1, n2: 2, EA, EI, rel1: true },
+      ],
+    );
+    const r = m.solve({ nodal: [{ node: 1, fx: 0, fy: -12, mz: 0 }], dist: [] });
+    // второй стержень шарнирный с обоих концов по факту (шарнир + шарнирная опора): вся сила идёт в консоль
+    expect(forcesAt(r.elems[0], 0).M).toBeCloseTo(-36, 6);
+    expect(r.reactions[1]).toBeCloseTo(12, 6);
+    expect(r.reactions[7]).toBeCloseTo(0, 6);
+  });
+
   it('П-образная рама с шарнирными опорами и горизонтальной силой: M в узле = P·h/2', () => {
     const h = 5;
     const l = 8;

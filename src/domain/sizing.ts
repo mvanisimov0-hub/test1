@@ -3,6 +3,7 @@
 import { checkSection, type CheckResult, type ForceTuple, type MemberCtx, type MemberKind } from './checks';
 import { FemModel, forcesAt, type CaseResult, type LoadCase } from './fem';
 import {
+  GROUP_LABEL,
   buildCases,
   buildCombos,
   type CaseDef,
@@ -302,20 +303,20 @@ function columnMu(
     let k = 0;
     let p = 0;
     f.columns.forEach((c, i) => {
-      k += (Math.PI ** 2 * E_STEEL * secOf(i).Ix) / (4 * (c.height * 100) ** 3);
-      p += colN[i] / (c.height * 100);
+      k += (Math.PI ** 2 * E_STEEL * secOf(i).Ix) / (4 * (c.clear * 100) ** 3);
+      p += colN[i] / (c.clear * 100);
     });
     const n = colN[colIndex];
     if (n < 1 || p <= 0) return 2;
     const alpha = k / p;
     const lef = Math.PI * Math.sqrt((E_STEEL * cand.Ix) / (alpha * n));
-    return Math.min(4, Math.max(1, lef / (col.height * 100)));
+    return Math.min(4, Math.max(1, lef / (col.clear * 100)));
   }
   // жёсткая рама (табл. 31 СП 16)
   const cos = Math.cos((b.slopeDeg * Math.PI) / 180);
   const ls = b.width / b.spans / cos;
   const raf = sectionOf('rafter');
-  let n = (raf.Ix / ls) / (cand.Ix / col.height);
+  let n = (raf.Ix / ls) / (cand.Ix / col.clear);
   if (!col.outer) n *= 2;
   n = Math.max(n, 0.05);
   const mu = f.baseFix === 'pinned' ? 2 * Math.sqrt(1 + 0.38 / n) : Math.sqrt((n + 0.56) / (n + 0.14));
@@ -344,6 +345,8 @@ export function sizeFrame(
     const list = opt.catalogs[g].primary;
     sections[g] = list[Math.min(list.length - 1, Math.floor(list.length / 3))];
   }
+  /** нижняя граница ширины поясов: повышается, если решётка не помещается в узел */
+  let chordFloor = 0;
   const minIx: Partial<Record<GroupKey, number>> = {};
   const minA: Partial<Record<GroupKey, number>> = {};
   const hf = b.height / Math.max(1, b.floors);
@@ -361,11 +364,18 @@ export function sizeFrame(
           // связевая схема: этажи раскреплены диском перекрытия, верхний ярус — консоль над ним
           const topFloor = f.floorLevels[f.floorLevels.length - 1];
           out = Math.min(out, hf);
-          return { ...base, lefIn: Math.max(hf, 2 * (col.height - topFloor)), lefOut: out, lefB: out };
+          const upper = (f.trussRigid && col.outer ? 1.2 : 2) * (col.clear - topFloor);
+          return { ...base, lefIn: Math.max(hf, upper), lefOut: out, lefB: out };
         }
-        if (f.sideBraced) return { ...base, lefIn: col.height, lefOut: out, lefB: out };
-        const mu = columnMu(b, f, m.span, an.colN, (g) => sections[g], sec);
-        return { ...base, lefIn: mu * col.height, lefOut: out, lefB: out };
+        if (f.sideBraced) return { ...base, lefIn: col.clear, lefOut: out, lefB: out };
+        // ферма, закреплённая на колонне в двух уровнях, работает как жёсткий ригель рамы
+        const mu =
+          f.trussRigid && col.outer
+            ? f.baseFix === 'fixed'
+              ? 1.2
+              : 2.3
+            : columnMu(b, f, m.span, an.colN, (g) => sections[g], sec);
+        return { ...base, lefIn: mu * col.clear, lefOut: out, lefB: out };
       }
       case 'topChord':
         return { ...base, lefIn: m.len, lefOut: m.len, lefB: m.len };
@@ -386,12 +396,13 @@ export function sizeFrame(
   const filterFor = (g: GroupKey) => (s: Section): boolean => {
     if (minIx[g] && s.Ix < minIx[g]!) return false;
     if (minA[g] && s.A < minA[g]!) return false;
-    if (g === 'topChord') return s.b >= opt.minChord && s.tw >= opt.minChordT;
-    if (g === 'botChord') return s.b >= Math.max(opt.minChord, 0.7 * sections.topChord.b) && s.tw >= opt.minChordT;
+    if (g === 'topChord') return s.b >= Math.max(opt.minChord, chordFloor) && s.tw >= opt.minChordT;
+    if (g === 'botChord') return s.b >= Math.max(opt.minChord, chordFloor, 0.7 * sections.topChord.b) && s.tw >= opt.minChordT;
     if (g === 'webSup' || g === 'web') {
+      // конструктивные соотношения узлов из гнутосварных профилей: решётка не шире пояса
       const chord = Math.min(sections.topChord.b, sections.botChord.b);
-      const lo = g === 'webSup' ? 0.55 : 0.4;
-      return s.b >= Math.max(opt.minWeb, lo * chord) && s.b <= 0.9 * chord + 0.5 && s.tw <= Math.max(sections.topChord.tw, sections.botChord.tw) + 1;
+      const lo = g === 'webSup' ? 0.5 : 0.4;
+      return s.b >= Math.max(opt.minWeb, lo * chord) && s.b <= chord && s.tw <= Math.max(sections.topChord.tw, sections.botChord.tw) + 1;
     }
     return true;
   };
@@ -435,6 +446,11 @@ export function sizeFrame(
         }
       }
     }
+    if ((g === 'webSup' || g === 'web') && chordFloor < 300) {
+      // решётка требует более широкого пояса: расширяем пояса и повторяем расчёт
+      chordFloor = Math.min(sections.topChord.b, sections.botChord.b) + 20;
+      return true;
+    }
     // ничего не подошло: берём самое мощное сечение и сообщаем
     const all = [...opt.catalogs[g].primary, ...opt.catalogs[g].fallback].filter(filter);
     const last = all.sort((a, c) => a.Ix - c.Ix)[all.length - 1] ?? sections[g];
@@ -450,9 +466,9 @@ export function sizeFrame(
   let drift = 0;
   let slsOk = true;
   for (let bump = 0; bump < 14; bump++) {
-    for (let it = 0; it < 8; it++) {
+    for (let it = 0; it < 12; it++) {
       iterations++;
-      growOnly = it >= 4;
+      growOnly = it >= 6;
       analyses = variants.map((v) => analyzeVariant(b, v, li, sections, driftHeight));
       let changed = false;
       for (const g of GROUP_ORDER) {
@@ -491,7 +507,7 @@ export function sizeFrame(
     if (!present.has(g)) continue;
     const c = checks[g];
     if (c && c.check.util > 1.0001) {
-      warnings.push(`Не удалось подобрать сечение в сортаменте: ${g} (использование ${(c.check.util * 100).toFixed(0)}%). Требуется индивидуальное решение.`);
+      warnings.push(`Не удалось подобрать сечение в сортаменте: ${GROUP_LABEL[g].toLowerCase()} (использование ${(c.check.util * 100).toFixed(0)}%). Требуется индивидуальное решение.`);
     }
   }
   if (!slsOk) {

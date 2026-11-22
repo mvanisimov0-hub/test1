@@ -218,6 +218,7 @@ const FRAME0: FrameOptions = {
   step: null,
   roofScheme: 'auto',
   base: 'auto',
+  trussJoint: 'auto',
   columnProfile: 'auto',
   steel: 'C255',
   coating: 'primer',

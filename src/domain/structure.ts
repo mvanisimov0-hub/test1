@@ -3,6 +3,7 @@
 
 import { checkSection, phi, type ForceTuple } from './checks';
 import {
+  GROUP_LABEL,
   buildPlaneFrame,
   trussDepth,
   type CraneLoads,
@@ -42,17 +43,6 @@ import type { BaseFix, CoreType, FrameTech, Project, RoofScheme, WallSide } from
 
 const G = 9.81 / 1000; // кН на кг
 
-export const GROUP_LABEL: Record<GroupKey, string> = {
-  colOuter: 'Колонны крайних рядов',
-  colInner: 'Колонны средних рядов',
-  topChord: 'Верхний пояс ферм',
-  botChord: 'Нижний пояс ферм',
-  webSup: 'Опорные раскосы и стойки ферм',
-  web: 'Решётка ферм',
-  rafter: 'Ригели рам',
-  floorBeam: 'Главные балки перекрытия',
-  floorPost: 'Стойки перекрытия',
-};
 
 const GROUP_MARK: Record<GroupKey, string> = {
   colOuter: 'К1',
@@ -142,9 +132,17 @@ export function isSideBraced(p: Project): boolean {
   return p.envelope.walls !== 'none' && p.building.spans === 1 && p.building.length <= 12.01 && p.frame.crane.type !== 'bridge';
 }
 
-export function resolveBase(p: Project, scheme: RoofScheme, sideBraced: boolean): BaseFix {
+/** Ферма крепится к колонне жёстко (в двух уровнях): для сварного каркаса — по умолчанию */
+export function resolveTrussRigid(p: Project, tech: FrameTech, scheme: RoofScheme): boolean {
+  if (scheme !== 'truss') return false;
+  if (p.frame.trussJoint !== 'auto') return p.frame.trussJoint === 'rigid';
+  return tech === 'welded';
+}
+
+export function resolveBase(p: Project, scheme: RoofScheme, sideBraced: boolean, trussRigid: boolean): BaseFix {
   if (sideBraced) return p.frame.base === 'auto' ? 'pinned' : p.frame.base;
-  if (scheme === 'truss') return 'fixed'; // фермы опёрты шарнирно — колонны защемляются
+  // фермы на шарнирных опорах не образуют раму — колонны обязательно защемляются
+  if (scheme === 'truss' && (!trussRigid || p.building.spans > 1)) return 'fixed';
   if (p.frame.base !== 'auto') return p.frame.base;
   return p.foundation.type === 'screw' ? 'pinned' : 'fixed';
 }
@@ -281,7 +279,8 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
   const tech = forceTech ?? decision.tech;
   const scheme = resolveScheme(p, tech);
   const sideBraced = isSideBraced(p);
-  const baseFix = resolveBase(p, scheme, sideBraced);
+  const trussRigid = resolveTrussRigid(p, tech, scheme);
+  const baseFix = resolveBase(p, scheme, sideBraced, trussRigid);
   const { step, bays, frames } = frameStep(b, p.frame.step);
   const Ls = spanLength(b);
   const B = b.width;
@@ -309,6 +308,7 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
     craneCapacity: p.frame.crane.capacity,
     maxPurlin,
     sideBraced,
+    trussRigid,
   };
   const typical = buildPlaneFrame(b, { ...buildOpts, withFloors: false });
 
@@ -521,7 +521,12 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
   const lineForce = (roofLevelForce * (nSpans > 1 ? Ls : Ls / 2)) / B + craneLong;
 
   // связевые блоки: крайние шаги, свободные от ворот и дверей
-  const layout = layoutOpenings(b, p.openings);
+  const fakhverkCount = Math.max(0, Math.ceil(Ls / 6 - 1e-6) - 1);
+  const endStops: number[] = [0];
+  for (let sIdx = 0; sIdx < nSpans; sIdx++) {
+    for (let q = 1; q <= fakhverkCount + 1; q++) endStops.push(sIdx * Ls + (q * Ls) / (fakhverkCount + 1));
+  }
+  const layout = layoutOpenings(b, p.openings, canopy ? undefined : { left: frames, right: frames, front: endStops, back: endStops });
   warnings.push(...layout.warnings);
   const bayFree = (wall: WallSide, k: number) =>
     !layout.items.some(
@@ -733,10 +738,15 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
         { M: (q * hMax * hMax) / 8, Q: (q * hMax) / 2, lefB: 3, deflK: (5 * (qn / 100) * hc ** 4) / (384 * E_STEEL), deflLimit: hc / 200 },
         Ry,
       );
-      for (const x of [0, L]) {
+      let placed = 0;
+      for (const [x, wall] of [[0, 'front'], [L, 'back']] as [number, WallSide][]) {
         for (const post of posts) {
+          // стойка, попадающая в проём ворот, не ставится: её заменяет обрамление проёма
+          const inGate = layout.items.some((o) => o.wall === wall && o.opening.kind !== 'window' && post.z > o.u + 0.05 && post.z < o.u + o.w - 0.05);
+          if (inGate) continue;
           add('ФС1', 'fakhverk', fp.section, [x, 0, post.z], [x, post.h, post.z]);
           columnPoints.push({ x, z: post.z, cls: 'fakhverk' });
+          placed++;
         }
       }
       secondary.push({
@@ -747,7 +757,7 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
         sectionId: fp.section.id,
         util: fp.util,
         basis: `высота до ${fmt(hMax)} м, шаг ${fmt(a)} м; ${fp.governs.toLowerCase()}`,
-        count: posts.length * 2,
+        count: placed,
         length: hMax,
       });
     }
@@ -1147,6 +1157,7 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
     'Узлы (базы колонн, фланцевые стыки, узлы ферм из гнутосварных профилей) не рассчитываются; масса узловых деталей принята укрупнённо.',
     'Каркас с перекрытиями — связевая схема: перекрытие считается жёстким диском, горизонтальные нагрузки передаются на вертикальные связи.',
     'Здания длиной до 12 м — связевая схема: поперечные нагрузки передаются связями покрытия на связи в торцах, колонны опёрты шарнирно.',
+    'Сварной каркас: фермы крепятся к крайним колоннам в уровнях верхнего и нижнего поясов (жёсткое сопряжение); каркас по КМ/КМД — шарнирное опирание ферм на защемлённые колонны.',
     'Торцевые рамы приняты такими же, как рядовые. Сейсмика, температурные воздействия и огнестойкость не рассматриваются.',
     'Расчёт предварительный: служит основанием для КП и задания на проектирование, до сверки с конструктором не заменяет раздел КМ.',
   ];
@@ -1201,6 +1212,8 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
     },
     foundationLoads,
     braceReaction: { horizontal: braceV, vertical: (braceV * hBrace) / step },
+    trussRigid,
+    openings: layout.items,
     elements,
     spec,
     columns: columnPoints,
@@ -1250,6 +1263,8 @@ function failed(
     sls: { deflection: 0, deflectionLimit: 0, drift: 0, driftLimit: 0, ok: false },
     foundationLoads: [],
     braceReaction: { horizontal: 0, vertical: 0 },
+    trussRigid: false,
+    openings: [],
     elements: [],
     spec: [],
     columns: [],

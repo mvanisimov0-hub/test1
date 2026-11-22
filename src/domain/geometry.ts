@@ -63,7 +63,31 @@ export interface OpeningInstance {
  * Раскладка проёмов по стенам. Проёмы с заданной привязкой ставятся по ней,
  * остальные распределяются равномерно в своём ярусе (первый этаж / верхние ряды окон).
  */
-export function layoutOpenings(b: Building, openings: Opening[]): { items: OpeningInstance[]; warnings: string[] } {
+/** Сдвинуть проём так, чтобы он не попадал на колонну или стойку (stops — их привязки вдоль стены) */
+function clearOfStops(u: number, w: number, stops: number[] | undefined): number {
+  if (!stops || stops.length < 2) return u;
+  const gap = 0.15;
+  if (!stops.some((s) => s > u + 0.05 && s < u + w - 0.05)) return u;
+  let best = u;
+  let bestShift = Infinity;
+  for (let i = 0; i < stops.length - 1; i++) {
+    const lo = stops[i] + gap;
+    const hi = stops[i + 1] - gap - w;
+    if (hi < lo) continue;
+    const cand = Math.min(Math.max(u, lo), hi);
+    if (Math.abs(cand - u) < bestShift) {
+      bestShift = Math.abs(cand - u);
+      best = cand;
+    }
+  }
+  return best;
+}
+
+export function layoutOpenings(
+  b: Building,
+  openings: Opening[],
+  stops?: Partial<Record<WallSide, number[]>>,
+): { items: OpeningInstance[]; warnings: string[] } {
   const items: OpeningInstance[] = [];
   const warnings: string[] = [];
   const walls: WallSide[] = ['front', 'back', 'left', 'right'];
@@ -115,7 +139,8 @@ export function layoutOpenings(b: Building, openings: Opening[]): { items: Openi
       }
       slots.forEach((a, s) => {
         const center = ((s + 0.5) * len) / n;
-        const u = Math.min(Math.max(center - a.o.w / 2, 0.3), Math.max(0.3, len - a.o.w - 0.3));
+        let u = Math.min(Math.max(center - a.o.w / 2, 0.3), Math.max(0.3, len - a.o.w - 0.3));
+        if (a.o.kind !== 'window' || a.o.sill < 2.5) u = clearOfStops(u, a.o.w, stops?.[wall]);
         items.push({ opening: a.o, index: a.i, wall, u, w: a.o.w, h: a.o.h, sill: a.o.sill });
       });
     }
