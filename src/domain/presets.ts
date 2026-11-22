@@ -10,6 +10,7 @@ import {
   type Envelope,
   type FoundationOptions,
   type FrameOptions,
+  type Annex,
   type Opening,
   type Project,
   type Site,
@@ -288,6 +289,39 @@ export function newProject(type: BuildingType = 'hangar', entityId = ''): Projec
     },
     overrides: {},
     customLines: [],
+    annexes: [],
   };
   return applyPreset(base, type);
+}
+
+/** Новая пристройка с типовыми размерами: вдоль продольной стены, односкатная, ниже основного здания */
+export function newAnnex(p: Project, index: number): Annex {
+  const main = p.building;
+  const length = Math.min(12, main.length);
+  return {
+    id: uid(),
+    name: `Пристройка ${index}`,
+    wall: 'right',
+    mode: 'side',
+    offset: 0,
+    building: {
+      type: 'abk',
+      width: 6,
+      length,
+      height: Math.max(2.7, Math.min(3.3, main.height - 1.5)),
+      spans: 1,
+      roof: 'mono',
+      slopeDeg: 7,
+      floors: 1,
+      floorLength: null,
+      floorLiveKpa: 2,
+      heated: main.heated,
+      tInside: main.heated ? 18 : 5,
+    },
+    walls: true,
+    openings: [
+      { id: uid(), kind: 'door', subtype: 'steel', wall: 'right', w: 0.9, h: 2.05, qty: 1, sill: 0, offset: null },
+      { id: uid(), kind: 'window', subtype: 'pvc', wall: 'right', w: 1.5, h: 1.2, qty: 2, sill: 0.9, offset: null },
+    ],
+  };
 }

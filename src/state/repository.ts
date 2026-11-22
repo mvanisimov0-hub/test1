@@ -59,6 +59,7 @@ export function migrateProject(raw: unknown): Project | null {
     openings: Array.isArray(src.openings) ? src.openings.map((o) => ({ ...o, offset: o.offset ?? null })) : base.openings,
     overrides: src.overrides ?? {},
     customLines: Array.isArray(src.customLines) ? src.customLines : [],
+    annexes: Array.isArray(src.annexes) ? src.annexes : [],
   };
   return merged;
 }

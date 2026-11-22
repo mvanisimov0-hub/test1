@@ -296,6 +296,9 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
   const mu = snowMu(b.slopeDeg);
   const snowN = p.site.sg * mu;
   const snow = snowN * GAMMA.snow;
+  // снеговой мешок у стены более высокого блока (схема Б.8 СП 20)
+  const drift = b.snowDrift;
+  const driftAt = (d: number) => (drift && d < drift.b ? drift.mu - ((drift.mu - 1) * d) / drift.b : 1);
   const riseMax = b.roof === 'mono' ? B * Math.tan(alpha) : (B / 2) * Math.tan(alpha);
   const hTop = H + (scheme === 'truss' ? trussDepth(b) : 0.3) + riseMax;
   const wp = windPressure(p.site.windDistrict, p.site.terrain, hTop, L);
@@ -323,13 +326,16 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
   const purlinCatalog =
     tech === 'welded' ? byMass([...RECT_TUBES, ...CHANNELS]) : byMass([...CHANNELS, ...RECT_TUBES.filter((s) => s.h >= 160), ...IBEAMS_B]);
   const lcm = step * 100;
+  // множители снега: для рам и для самого нагруженного прогона
+  const frameDrift = drift ? (drift.dir === 'z' ? driftAt : () => (driftAt(0) + driftAt(step)) / 2) : undefined;
+  const purlinDrift = drift ? (drift.dir === 'z' ? Math.max(driftAt(tribH), 0.5 * driftAt(tribH / 4)) : driftAt(0)) : 1;
   let purlin = purlinCatalog[0];
   let purlinUtil = 0;
   let purlinGov = '';
   for (let i = 0; i < 2; i++) {
     const self = purlin.mass * G;
-    const qn = (snowN * tribH + (roofPanel * tribH) / cos) * cos + self;
-    const q = (snow * tribH + (roofPanel * GAMMA.panels * tribH) / cos) * cos + self * GAMMA.steel;
+    const qn = (snowN * purlinDrift * tribH + (roofPanel * tribH) / cos) * cos + self;
+    const q = (snow * purlinDrift * tribH + (roofPanel * GAMMA.panels * tribH) / cos) * cos + self * GAMMA.steel;
     const qUp = Math.max(0, (-ceUp * wp.w * tribH) / cos - 0.9 * ((roofPanel * tribH) / cos + self));
     const r = pickBeam(
       purlinCatalog,
@@ -366,7 +372,9 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
     roofDead,
     tech: techN * GAMMA.tech,
     techN,
-    snow,
+    // в загружениях μ применяется отдельно, поэтому здесь нагрузка при μ = 1
+    snow: p.site.sg * GAMMA.snow,
+    snowFactor: frameDrift,
     wind: wp.w,
     wall: wallPanel * GAMMA.panels,
     wallN: wallPanel,
@@ -677,6 +685,7 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
     let governs = '';
     let blocked = false;
     for (const wall of ['front', 'back'] as WallSide[]) {
+      if (b.openSides?.includes(wall)) continue; // со стороны примыкания раму держит соседний блок
       const busy = layout.items
         .filter((o) => o.wall === wall && o.opening.kind !== 'window')
         .map((o) => [o.u - 0.1, o.u + o.w + 0.1])
@@ -740,6 +749,7 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
       );
       let placed = 0;
       for (const [x, wall] of [[0, 'front'], [L, 'back']] as [number, WallSide][]) {
+        if (b.openSides?.includes(wall)) continue;
         for (const post of posts) {
           // стойка, попадающая в проём ворот, не ставится: её заменяет обрамление проёма
           const inGate = layout.items.some((o) => o.wall === wall && o.opening.kind !== 'window' && post.z > o.u + 0.05 && post.z < o.u + o.w - 0.05);
@@ -1151,7 +1161,7 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
   const braceV = lineForce / nBraced;
   const assumptions = [
     'Расчёт поперечной рамы — плоская стержневая система, метод конечных элементов; усилия от сочетаний нагрузок по п. 6 СП 20.13330.',
-    'Снеговая нагрузка: коэффициенты ce = 1, ct = 1 (без учёта сноса снега ветром и снеговых мешков у перепадов высот).',
+    'Снеговая нагрузка: коэффициенты ce = 1, ct = 1 (без учёта сноса снега ветром). Снеговой мешок учитывается у примыкания пристройки к более высокому блоку (схема Б.8), для прогонов — по наибольшей ординате.',
     'Ветровая нагрузка: осреднённые аэродинамические коэффициенты, без выделения местных зон у карнизов и углов; пульсационная составляющая учтена по п. 11.1.8.',
     'Устойчивость сжато-изгибаемых элементов в плоскости рамы проверена с увеличением момента 1/(1 − N/Ncr).',
     'Узлы (базы колонн, фланцевые стыки, узлы ферм из гнутосварных профилей) не рассчитываются; масса узловых деталей принята укрупнённо.',
@@ -1174,6 +1184,7 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
     step,
     bays,
     frames,
+    endStops,
     spanLen: Ls,
     roofOffset: scheme === 'truss' ? typical.roofOffset : S.rafter.h / 2000,
     purlinH,
@@ -1182,6 +1193,7 @@ export function calcStructure(p: Project, forceTech?: FrameTech): StructureResul
       mu,
       snowN,
       snow,
+      snowDrift: drift ? { h: drift.h, mu: drift.mu, b: drift.b } : null,
       w0: wp.w0,
       k: wp.k,
       zeta: wp.zeta,
@@ -1248,11 +1260,12 @@ function failed(
     step,
     bays,
     frames,
+    endStops: [0, p.building.width],
     spanLen: spanLength(p.building),
     roofOffset: 0.3,
     purlinH: 0.15,
     loads: {
-      sg: p.site.sg, mu: 1, snowN: 0, snow: 0, w0: 0, k: 0, zeta: 0, nu: 0, windN: 0, wind: 0, roofPanel: 0, purlins: 0,
+      sg: p.site.sg, mu: 1, snowN: 0, snow: 0, snowDrift: null, w0: 0, k: 0, zeta: 0, nu: 0, windN: 0, wind: 0, roofPanel: 0, purlins: 0,
       roofDeadN: 0, roofDead: 0, tech: 0, wall: 0, floorDeadN: 0, floorLiveN: 0, crane: null,
     },
     cases: [],

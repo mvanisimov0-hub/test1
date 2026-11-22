@@ -20,6 +20,11 @@ interface AppContext {
   remove(id: string): void;
   importProject(raw: unknown): boolean;
   patchSettings(fn: (draft: Settings) => void): void;
+  /**
+   * Передвинуть один проём мышью. blockId — пустая строка для основного здания.
+   * u — привязка от начала стены, м; sill — новая отметка низа (для окон), если меняется.
+   */
+  moveOpening(blockId: string, openingId: string, index: number, u: number, sill?: number): void;
 }
 
 const Ctx = createContext<AppContext | null>(null);
@@ -126,10 +131,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const calc = useMemo(() => calcProject(project, settings), [project, settings]);
+  const calcRef = useRef(calc);
+  calcRef.current = calc;
+
+  const moveOpening = useCallback(
+    (blockId: string, openingId: string, index: number, u: number, sill?: number) => {
+      patch((d) => {
+        const list = blockId ? d.annexes.find((a) => a.id === blockId)?.openings : d.openings;
+        const o = list?.find((x) => x.id === openingId);
+        if (!o) return;
+        const snap = (v: number) => Math.round(v * 20) / 20;
+        // при первом перетаскивании фиксируем текущие места всех проёмов группы, чтобы остальные не съехали
+        if (!o.positions || o.positions.length !== o.qty || o.positions.some((v) => v == null)) {
+          const blk = calcRef.current.blocks.find((b) => b.id === blockId);
+          const now = blk?.structure.openings.filter((it) => it.opening.id === openingId) ?? [];
+          o.positions = Array.from({ length: o.qty }, (_, i) => snap(now.find((it) => it.index === i)?.u ?? 0));
+        }
+        o.positions[index] = Math.max(0, snap(u));
+        if (sill != null) o.sill = Math.max(0, snap(sill));
+      });
+    },
+    [patch],
+  );
 
   const value = useMemo<AppContext>(
-    () => ({ project, settings, projects, calc, patch, replace, create, open, duplicate, remove, importProject, patchSettings }),
-    [project, settings, projects, calc, patch, replace, create, open, duplicate, remove, importProject, patchSettings],
+    () => ({ project, settings, projects, calc, patch, replace, create, open, duplicate, remove, importProject, patchSettings, moveOpening }),
+    [project, settings, projects, calc, patch, replace, create, open, duplicate, remove, importProject, patchSettings, moveOpening],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

@@ -92,6 +92,8 @@ export interface LoadSummary {
   mu: number;
   snowN: number;
   snow: number;
+  /** снеговой мешок у перепада высот: перепад, μ у стены, длина зоны */
+  snowDrift: { h: number; mu: number; b: number } | null;
   w0: number;
   k: number;
   zeta: number;
@@ -151,6 +153,8 @@ export interface StructureResult {
   step: number;
   bays: number;
   frames: number[];
+  /** привязки колонн и стоек фахверка в торцевых стенах, м */
+  endStops: number[];
   spanLen: number;
   roofOffset: number;
   purlinH: number;

@@ -2,7 +2,7 @@
 // Расчётное ядро (src/domain) не зависит от интерфейса и браузера:
 // его можно без изменений перенести на сервер.
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export type BuildingType =
   | 'hozblok'
@@ -54,6 +54,8 @@ export interface Opening {
   sill: number;
   /** привязка первого проёма от начала стены, м; null — равномерно по стене */
   offset: number | null;
+  /** положения отдельных проёмов после расстановки мышью, м от начала стены; null — авто */
+  positions?: (number | null)[];
   automation?: boolean;
 }
 
@@ -78,6 +80,37 @@ export interface Building {
   heated: boolean;
   /** расчётная температура внутри, °C */
   tInside: number;
+  /** стены, которых нет: сторона примыкания пристройки к основному зданию (задаётся расчётом) */
+  openSides?: WallSide[];
+  /** снеговой мешок у перепада высот (задаётся расчётом для пристроек) */
+  snowDrift?: SnowDrift;
+}
+
+export interface SnowDrift {
+  /** перепад высот, м */
+  h: number;
+  /** коэффициент μ у стены и длина зоны повышенных снегоотложений, м */
+  mu: number;
+  b: number;
+  /** направление убывания: поперёк пристройки (z) или вдоль неё (x) */
+  dir: 'x' | 'z';
+}
+
+/** side — пристройка вытянута вдоль стены основного здания; end — примыкает к стене торцом */
+export type AnnexMode = 'side' | 'end';
+
+/** Пристройка: прямоугольный блок со своими габаритами, высотой и кровлей */
+export interface Annex {
+  id: string;
+  name: string;
+  /** стена основного здания, к которой примыкает блок, и привязка вдоль неё, м */
+  wall: WallSide;
+  mode: AnnexMode;
+  offset: number;
+  building: Building;
+  /** false — пристроенный навес без стен */
+  walls: boolean;
+  openings: Opening[];
 }
 
 export interface Site {
@@ -196,6 +229,8 @@ export interface Project {
   commercial: Commercial;
   overrides: Record<string, LineOverride>;
   customLines: CustomLine[];
+  /** пристройки к основному зданию */
+  annexes: Annex[];
 }
 
 export interface LegalEntity {

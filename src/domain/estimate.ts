@@ -2,6 +2,7 @@
 
 import type { FoundationResult } from './foundation';
 import type { EnvelopeGeometry } from './geometry';
+import type { PanelsResult } from './panels';
 import { priceMap, type PriceMap } from './prices';
 import type { StructureResult } from './structTypes';
 import { CORE_LABEL } from './thermal';
@@ -91,16 +92,32 @@ function panelPrice(pm: PriceMap, kind: 'wall' | 'roof', core: CoreType, thk: nu
 const r2 = (v: number) => Math.round(v * 100) / 100;
 const r1 = (v: number) => Math.round(v * 10) / 10;
 
-export function buildEstimate(
-  p: Project,
-  st: StructureResult,
-  geo: EnvelopeGeometry,
-  fnd: FoundationResult,
-  prices: PriceItem[],
-  entity: LegalEntity | undefined,
-): Estimate {
-  const pm = priceMap(prices);
-  const raw: { id: string; section: SectionId; name: string; unit: string; qty: number; mat: number; work: number; note?: string }[] = [];
+interface RawLine {
+  id: string;
+  section: SectionId;
+  name: string;
+  unit: string;
+  qty: number;
+  mat: number;
+  work: number;
+  note?: string;
+}
+
+/** Один блок здания (основное здание или пристройка) с результатами его расчёта */
+export interface EstimateBlock {
+  /** пустая строка для основного здания, идентификатор — для пристройки */
+  id: string;
+  label: string;
+  project: Project;
+  structure: StructureResult;
+  geo: EnvelopeGeometry;
+  foundation: FoundationResult;
+  panels: PanelsResult;
+}
+
+/** Позиции разделов 1–7 для одного блока */
+function blockLines(p: Project, st: StructureResult, geo: EnvelopeGeometry, fnd: FoundationResult, panels: PanelsResult, pm: PriceMap): RawLine[] {
+  const raw: RawLine[] = [];
   const add = (id: string, section: SectionId, name: string, unit: string, qty: number, mat: number, work: number, note?: string) => {
     if (!(qty > 0)) return;
     raw.push({ id, section, name, unit, qty, mat, work, note });
@@ -165,8 +182,9 @@ export function buildEstimate(
   }
 
   // 4. Стены и кровля
-  const wallQty = r1(geo.wallNet * 1.03);
-  const roofQty = r1(geo.roofArea * 1.02);
+  // количество панелей — по раскладке: заказная площадь с учётом подрезки
+  const wallQty = r1(panels.wallArea);
+  const roofQty = r1(panels.roofArea);
   if (env.walls === 'sandwich') {
     add('wall.panel', 'envelope', `Сэндвич-панели стеновые ${env.wallThk} мм, ${CORE_LABEL[env.wallCore]}`, 'м²', wallQty, panelPrice(pm, 'wall', env.wallCore, env.wallThk), pm['mount.panel.wall'].work);
   } else if (env.walls === 'proflist') {
@@ -177,7 +195,7 @@ export function buildEstimate(
   } else {
     byPrice('roof.proflist', 'envelope', 'proflist.roof', roofQty);
   }
-  byPrice('trim', 'envelope', 'trim', r1(geo.trim.total));
+  for (const t of panels.trims) byPrice(t.priceId, 'envelope', t.priceId, r1(t.length), undefined, `${t.pieces} шт. по 3 м: ${t.where}`);
   byPrice('fasteners', 'envelope', 'fasteners', r1(geo.wallNet + geo.roofArea));
   if (env.gutters) byPrice('gutter', 'envelope', 'gutter', r1(geo.gutterLength + geo.downpipes * geo.eaveHeight));
   if (env.snowGuards) byPrice('snowguard', 'envelope', 'snowguard', r1(geo.gutterLength));
@@ -214,19 +232,57 @@ export function buildEstimate(
   // 7. Электрика
   if (p.electric.enabled) byPrice('electric', 'electric', `electric.${p.electric.level}`, r1(geo.totalFloorArea));
 
+  return raw;
+}
+
+function panelVolume(p: Project, geo: EnvelopeGeometry): number {
+  const env = p.envelope;
+  return (
+    (env.walls === 'sandwich' ? (geo.wallNet * env.wallThk) / 1000 : geo.wallNet * 0.03) +
+    (env.roofing === 'sandwich' ? (geo.roofArea * env.roofThk) / 1000 : geo.roofArea * 0.05)
+  );
+}
+
+export function buildEstimate(p: Project, blocks: EstimateBlock[], prices: PriceItem[], entity: LegalEntity | undefined): Estimate {
+  const pm = priceMap(prices);
+  // позиции блоков объединяются: одинаковые по наименованию и ценам складываются,
+  // отличающиеся у пристройки идут отдельной строкой с её названием
+  const raw: RawLine[] = [];
+  const index = new Map<string, RawLine>();
+  for (const blk of blocks) {
+    for (const l of blockLines(blk.project, blk.structure, blk.geo, blk.foundation, blk.panels, pm)) {
+      const key = `${l.section}|${l.name}|${l.unit}|${l.mat}|${l.work}`;
+      const same = index.get(key);
+      if (same) {
+        same.qty = Math.round((same.qty + l.qty) * 100) / 100;
+        continue;
+      }
+      const line = blk.id ? { ...l, id: `${blk.id}:${l.id}`, name: `${l.name} — ${blk.label.toLowerCase()}` } : l;
+      index.set(key, line);
+      raw.push(line);
+    }
+  }
+  const add = (id: string, section: SectionId, name: string, unit: string, qty: number, mat: number, work: number) => {
+    if (qty > 0) raw.push({ id, section, name, unit, qty, mat, work });
+  };
+
   // 8. Доставка и организация работ
-  const panelVolume = (env.walls === 'sandwich' ? (geo.wallNet * env.wallThk) / 1000 : geo.wallNet * 0.03) + (env.roofing === 'sandwich' ? (geo.roofArea * env.roofThk) / 1000 : geo.roofArea * 0.05);
+  const massT = blocks.reduce((a, x) => a + x.structure.mass.total, 0) / 1000;
+  const volume = blocks.reduce((a, x) => a + panelVolume(x.project, x.geo), 0);
+  const panelArea = blocks.reduce((a, x) => a + x.geo.wallNet + x.geo.roofArea, 0);
+  const hasOpenings = blocks.some((x) => x.project.openings.length > 0);
+  const welded = blocks[0].structure.tech === 'welded';
   // загрузка машин: металл по массе (20 т), панели по объёму (70 м³), ворота и окна — докладкой
-  const trips = Math.max(1, Math.ceil(massT / 20 + panelVolume / 70 + (p.openings.length ? 0.3 : 0) - 1e-9));
+  const trips = Math.max(1, Math.ceil(massT / 20 + volume / 70 + (hasOpenings ? 0.3 : 0) - 1e-9));
   const trip = Math.max(pm['delivery.min'].work, p.site.deliveryKm * pm['delivery.km'].work);
   add('delivery', 'logistics', `Доставка материалов на объект, ${p.site.deliveryKm} км`, 'рейс', trips, 0, Math.round(trip));
-  const shifts = Math.ceil(massT / (welded ? 1.5 : 3)) + Math.ceil((geo.wallNet + geo.roofArea) / 250);
-  byPrice('machinery', 'logistics', 'machinery.shift', Math.max(1, shifts));
+  const shifts = Math.ceil(massT / (welded ? 1.5 : 3)) + Math.ceil(panelArea / 250);
+  add('machinery', 'logistics', pm['machinery.shift'].name, pm['machinery.shift'].unit, Math.max(1, shifts), pm['machinery.shift'].mat, pm['machinery.shift'].work);
 
   // ручные правки и свои позиции
   const mm = 1 + p.commercial.markupMat / 100;
   const mw = 1 + p.commercial.markupWork / 100;
-  const finish = (l: (typeof raw)[number], custom: boolean): EstimateLine => {
+  const finish = (l: RawLine, custom: boolean): EstimateLine => {
     const ov = custom ? undefined : p.overrides[l.id];
     const qty = ov?.qty ?? l.qty;
     const mat = ov?.mat ?? l.mat;
@@ -294,6 +350,7 @@ export function buildEstimate(
   const vatRate = entity?.vatRate ?? 0;
   const vat = vatMode === 'included' ? (total * vatRate) / (100 + vatRate) : 0;
   const margin = total - cost;
+  const area = blocks.reduce((a, x) => a + x.geo.totalFloorArea, 0);
   return {
     sections,
     totals: {
@@ -309,7 +366,7 @@ export function buildEstimate(
       vat,
       margin,
       marginPct: total > 0 ? (margin / total) * 100 : 0,
-      perM2: geo.totalFloorArea > 0 ? total / geo.totalFloorArea : 0,
+      perM2: area > 0 ? total / area : 0,
     },
   };
 }

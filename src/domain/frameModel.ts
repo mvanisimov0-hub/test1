@@ -398,6 +398,8 @@ export interface LoadInput {
   techN: number;
   /** расчётная снеговая нагрузка на 1 м² плана при μ = 1, кПа */
   snow: number;
+  /** множитель снеговой нагрузки по ширине рамы: снеговой мешок у перепада высот */
+  snowFactor?: (z: number) => number;
   /** расчётное ветровое давление при c = 1, кПа */
   wind: number;
   /** расчётный вес стенового ограждения на 1 м² стены, кПа */
@@ -461,7 +463,8 @@ function deadCase(b: Building, f: PlaneFrame, li: LoadInput, norm: boolean): Loa
 function snowCase(f: PlaneFrame, li: LoadInput, mu: number, left: number, right: number): LoadCase {
   const lc = emptyCase();
   for (const s of f.roofSegs) {
-    const k = s.sign > 0 ? left : right;
+    const zMid = (f.nodes[s.n1].x + f.nodes[s.n2].x) / 2;
+    const k = (s.sign > 0 ? left : right) * (li.snowFactor ? li.snowFactor(zMid) : 1);
     const p = li.snow * mu * k * s.dz * li.step * 0.5;
     lc.nodal.push({ node: s.n1, fx: 0, fy: -p, mz: 0 }, { node: s.n2, fx: 0, fy: -p, mz: 0 });
   }

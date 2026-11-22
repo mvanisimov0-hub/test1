@@ -93,6 +93,7 @@ export function layoutOpenings(
   const walls: WallSide[] = ['front', 'back', 'left', 'right'];
   for (const wall of walls) {
     const len = wallLength(b, wall);
+    if (b.openSides?.includes(wall)) continue;
     const onWall = openings.filter((o) => o.wall === wall && o.qty > 0);
     if (!onWall.length) continue;
     const bands = new Map<string, Opening[]>();
@@ -104,7 +105,12 @@ export function layoutOpenings(
       const auto: { o: Opening; i: number }[] = [];
       for (const o of list) {
         for (let i = 0; i < o.qty; i++) {
-          if (o.offset != null) {
+          const fixed = o.positions?.[i];
+          if (fixed != null) {
+            // проём расставлен мышью: положение задано явно
+            const u = Math.min(Math.max(fixed, 0), Math.max(0, len - o.w));
+            items.push({ opening: o, index: i, wall, u, w: o.w, h: o.h, sill: o.sill });
+          } else if (o.offset != null) {
             const pitch = o.qty > 1 ? Math.max(o.w, (len - 2 * o.offset - o.w) / (o.qty - 1)) : 0;
             items.push({ opening: o, index: i, wall, u: o.offset + i * pitch, w: o.w, h: o.h, sill: o.sill });
           } else {
@@ -197,9 +203,16 @@ export function envelopeGeometry(
   const eaveHeight = base;
   const ridgeHeight = base + riseMax;
 
-  const longWalls = b.roof === 'mono' ? L * base + L * (base + riseMax) : 2 * L * base;
-  const endWalls = 2 * (B * base + riseArea);
-  const wallGross = hasWalls ? longWalls + endWalls : 0;
+  // площади стен по сторонам; сторона примыкания к другому блоку не обшивается
+  const open = new Set(b.openSides ?? []);
+  const sideArea: Record<WallSide, number> = {
+    left: L * (b.roof === 'mono' ? base + riseMax : base),
+    right: L * base,
+    front: B * base + riseArea,
+    back: B * base + riseArea,
+  };
+  const sides = (['left', 'right', 'front', 'back'] as WallSide[]).filter((w) => !open.has(w));
+  const wallGross = hasWalls ? sides.reduce((a, w) => a + sideArea[w], 0) : 0;
 
   let gateArea = 0;
   let doorArea = 0;
@@ -207,6 +220,7 @@ export function envelopeGeometry(
   let windowArea = 0;
   let openTrim = 0;
   for (const o of openings) {
+    if (open.has(o.wall)) continue;
     const a = o.w * o.h * o.qty;
     if (o.kind === 'gate') {
       gateArea += a;
@@ -227,8 +241,9 @@ export function envelopeGeometry(
   const roofArea = (b.roof === 'mono' ? slopeLength : 2 * slopeLength) * (L + 2 * overhang);
 
   const perimeter = 2 * (L + B);
+  const openLen = [...open].reduce((a, w) => a + (w === 'left' || w === 'right' ? L : B), 0);
   const corners = hasWalls ? 4 * (base + riseMax / 2) * 2 : 0; // наружные и внутренние нащельники
-  const plinth = hasWalls ? perimeter : 0;
+  const plinth = hasWalls ? perimeter - openLen : 0;
   const eaves = 2 * (L + 2 * overhang);
   const ridge = b.roof === 'gable' ? L + 2 * overhang : 0;
   const verges = (b.roof === 'gable' ? 4 : 2) * slopeLength;
