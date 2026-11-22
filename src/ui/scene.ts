@@ -2,7 +2,7 @@
 // Оси: X — вдоль здания, Y — вверх, Z — поперёк (как в расчётном ядре).
 
 import * as THREE from 'three';
-import type { CalcResult } from '../domain/calc';
+import type { BlockCalc, CalcResult } from '../domain/calc';
 import { ral } from '../domain/colors';
 import { wallLength } from '../domain/geometry';
 import { sectionById } from '../domain/sections';
@@ -46,7 +46,24 @@ interface WallFrame {
   n: THREE.Vector3;
 }
 
-export function buildScene(p: Project, calc: CalcResult, mode: ViewMode, theme: SceneTheme): THREE.Group {
+/** Данные о проёме на его 3D-модели: по ним работает перетаскивание мышью */
+export interface OpeningTag {
+  blockId: string;
+  openingId: string;
+  index: number;
+  wall: WallSide;
+  /** ширина проёма и длина стены, м */
+  w: number;
+  wallLen: number;
+  /** точка начала стены и направление вдоль неё в осях блока */
+  origin: [number, number, number];
+  dir: [number, number, number];
+  /** привязка проёма на момент построения модели */
+  u: number;
+}
+
+/** Модель одного блока в его собственных осях */
+function buildBlock(p: Project, calc: BlockCalc, mode: ViewMode, theme: SceneTheme, isMain: boolean): THREE.Group {
   const root = new THREE.Group();
   const b = p.building;
   const env = p.envelope;
@@ -89,14 +106,6 @@ export function buildScene(p: Project, calc: CalcResult, mode: ViewMode, theme: 
   const trimColor = ral(env.trimColor).hex;
 
   // ── основание ──
-  const ground = new THREE.Mesh(
-    new THREE.CircleGeometry(Math.max(L, B) * 4 + 30, 64),
-    new THREE.MeshStandardMaterial({ color: theme.ground, roughness: 1, metalness: 0 }),
-  );
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.set(L / 2, -0.07, B / 2);
-  ground.receiveShadow = true;
-  root.add(ground);
 
   const padW = p.foundation.blindArea ? 1.1 : 0.3;
   const pad = new THREE.Mesh(
@@ -108,7 +117,7 @@ export function buildScene(p: Project, calc: CalcResult, mode: ViewMode, theme: 
   root.add(pad);
 
   // фигура человека для масштаба
-  {
+  if (isMain) {
     const man = new THREE.Group();
     const mat = new THREE.MeshStandardMaterial({ color: 0x35404c, roughness: 0.9 });
     const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 1.05, 4, 10), mat);
@@ -147,11 +156,13 @@ export function buildScene(p: Project, calc: CalcResult, mode: ViewMode, theme: 
     });
     const gateMat = cladMat(0xb3b8bc, { roughness: 0.55 });
     const frameWhite = cladMat(0xf2f2ef);
+    const gripMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
     const seams: number[] = [];
     const gateLines: number[] = [];
     const pushLine = (arr: number[], a: THREE.Vector3, c: THREE.Vector3) => arr.push(a.x, a.y, a.z, c.x, c.y, c.z);
 
     for (const wall of ['left', 'right', 'front', 'back'] as WallSide[]) {
+      if (b.openSides?.includes(wall)) continue; // сторона примыкания к соседнему блоку
       const wf = wallFrames[wall];
       const len = wallLength(b, wall);
       const long = wall === 'left' || wall === 'right';
@@ -170,7 +181,7 @@ export function buildScene(p: Project, calc: CalcResult, mode: ViewMode, theme: 
       shape.closePath();
 
       const items = st.openings.filter((o) => o.wall === wall);
-      const holes: { u: number; v: number; w: number; h: number; kind: string; subtype: string }[] = [];
+      const holes: { u: number; v: number; w: number; h: number; kind: string; subtype: string; id: string; index: number }[] = [];
       for (const o of items) {
         const uu = Math.min(Math.max(o.u, 0.05), len - 0.1);
         const ww = Math.min(o.w, len - uu - 0.05);
@@ -185,7 +196,7 @@ export function buildScene(p: Project, calc: CalcResult, mode: ViewMode, theme: 
         hole.lineTo(uu, vv + hh);
         hole.closePath();
         shape.holes.push(hole);
-        holes.push({ u: uu, v: vv, w: ww, h: hh, kind: o.opening.kind, subtype: o.opening.subtype });
+        holes.push({ u: uu, v: vv, w: ww, h: hh, kind: o.opening.kind, subtype: o.opening.subtype, id: o.opening.id, index: o.index });
       }
 
       const geo = new THREE.ExtrudeGeometry(shape, { depth: wallT, bevelEnabled: false });
@@ -236,12 +247,28 @@ export function buildScene(p: Project, calc: CalcResult, mode: ViewMode, theme: 
         const g = new THREE.BoxGeometry(w, h, depth);
         const m = new THREE.Mesh(g, mat);
         m.position.copy(place(wf, u + w / 2, v + h / 2, wOff + depth / 2));
-        m.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(wf.u, up, wf.n));
+        // поворот без отражения: третья ось — u × up (совпадает с нормалью стены или противоположна ей)
+        m.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(wf.u, up, new THREE.Vector3().crossVectors(wf.u, up)));
         m.castShadow = shadow;
         root.add(m);
+        return m;
       };
       for (const h of holes) {
         const fr = 0.07;
+        // невидимая «ручка» по всему проёму: за неё проём перетаскивается мышью
+        const grip = box(h.u, h.v, h.w, h.h, wallT + 0.08, -0.02, gripMat);
+        const tag: OpeningTag = {
+          blockId: calc.id,
+          openingId: h.id,
+          index: h.index,
+          wall,
+          w: h.w,
+          wallLen: len,
+          origin: [wf.origin.x, 0, wf.origin.z],
+          dir: [wf.u.x, 0, wf.u.z],
+          u: h.u,
+        };
+        grip.userData.opening = tag;
         // обрамление проёма
         box(h.u - fr, h.v + h.h, h.w + 2 * fr, fr, 0.03, wallT, trimMat);
         box(h.u - fr, h.v, fr, h.h, 0.03, wallT, trimMat);
@@ -452,7 +479,30 @@ export function buildScene(p: Project, calc: CalcResult, mode: ViewMode, theme: 
     }
   }
 
-  root.position.set(-L / 2, 0, -B / 2);
+  return root;
+}
+
+/** Модель всего здания: основной блок и пристройки, каждая в своём положении на плане */
+export function buildScene(p: Project, calc: CalcResult, mode: ViewMode, theme: SceneTheme): THREE.Group {
+  const root = new THREE.Group();
+  const [x0, z0, x1, z1] = calc.totals.bounds;
+  const ground = new THREE.Mesh(
+    new THREE.CircleGeometry(Math.max(x1 - x0, z1 - z0) * 4 + 30, 64),
+    new THREE.MeshStandardMaterial({ color: theme.ground, roughness: 1, metalness: 0 }),
+  );
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.set((x0 + x1) / 2, -0.07, (z0 + z1) / 2);
+  ground.receiveShadow = true;
+  root.add(ground);
+  calc.blocks.forEach((blk, i) => {
+    const g = buildBlock(blk.project, blk, mode, theme, i === 0);
+    const { origin, ex, ez } = blk.placement;
+    g.matrixAutoUpdate = false;
+    g.matrix.makeBasis(new THREE.Vector3(ex[0], 0, ex[1]), new THREE.Vector3(0, 1, 0), new THREE.Vector3(ez[0], 0, ez[1])).setPosition(origin[0], 0, origin[1]);
+    root.add(g);
+  });
+  void p;
+  root.position.set(-(x0 + x1) / 2, 0, -(z0 + z1) / 2);
   return root;
 }
 
@@ -470,9 +520,11 @@ export type ViewPreset = 'iso' | 'front' | 'side' | 'top' | 'back';
 
 /** Положение камеры для заданного вида: здание целиком в кадре */
 export function cameraFor(p: Project, calc: CalcResult, view: ViewPreset, aspect: number, fovDeg: number): { position: THREE.Vector3; target: THREE.Vector3 } {
-  const L = p.building.length;
-  const B = p.building.width;
-  const H = calc.geo.ridgeHeight;
+  void p;
+  const [bx0, bz0, bx1, bz1] = calc.totals.bounds;
+  const L = bx1 - bx0;
+  const B = bz1 - bz0;
+  const H = calc.totals.height;
   const target = new THREE.Vector3(0, H * 0.42, 0);
   const dirs: Record<ViewPreset, THREE.Vector3> = {
     iso: new THREE.Vector3(-0.9, 0.5, -1.15),
@@ -491,9 +543,11 @@ export function cameraFor(p: Project, calc: CalcResult, view: ViewPreset, aspect
 }
 
 export function addLights(scene: THREE.Scene, p: Project, calc: CalcResult): void {
-  const L = p.building.length;
-  const B = p.building.width;
-  const H = calc.geo.ridgeHeight;
+  void p;
+  const [bx0, bz0, bx1, bz1] = calc.totals.bounds;
+  const L = bx1 - bx0;
+  const B = bz1 - bz0;
+  const H = calc.totals.height;
   scene.add(new THREE.HemisphereLight(0xffffff, 0xa4acb3, 1.9));
   const sun = new THREE.DirectionalLight(0xfff8ee, 2.6);
   const r = Math.hypot(L, B, H) / 2 + 4;
@@ -501,12 +555,12 @@ export function addLights(scene: THREE.Scene, p: Project, calc: CalcResult): voi
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   const cam = sun.shadow.camera;
-  cam.left = -r * 1.4;
-  cam.right = r * 1.4;
-  cam.top = r * 1.4;
-  cam.bottom = -r * 1.4;
+  cam.left = -r * 2.4;
+  cam.right = r * 2.4;
+  cam.top = r * 2.4;
+  cam.bottom = -r * 2.4;
   cam.near = 0.5;
-  cam.far = r * 6;
+  cam.far = r * 8;
   sun.shadow.bias = -0.0006;
   sun.shadow.normalBias = 0.04;
   scene.add(sun);

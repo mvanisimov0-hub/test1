@@ -3,6 +3,7 @@
 // которая привязывается к стене основного здания поворотом на угол, кратный 90°.
 
 import type { EnvelopeGeometry } from './geometry';
+import { recommendedPanels } from './thermal';
 import type { Annex, Building, Project, SnowDrift, WallSide } from './types';
 
 /** Положение блока на общем плане: world = origin + ex·x + ez·z (компоненты [X, Z]) */
@@ -91,11 +92,18 @@ export function snowDriftFor(p: Project, a: Annex, mainGeo: EnvelopeGeometry): S
 /** Пристройка как самостоятельный расчёт: наследует площадку, каркасные и отделочные решения основного здания */
 export function annexProject(p: Project, a: Annex, mainGeo: EnvelopeGeometry): Project {
   const walls = !a.walls ? 'none' : p.envelope.walls === 'none' ? 'sandwich' : p.envelope.walls;
+  // панели пристройки — как у основного здания, но не тоньше требуемых по теплозащите для её назначения
+  let { wallThk, roofThk } = p.envelope;
+  if (a.building.heated) {
+    const rec = recommendedPanels(a.building.type, a.building.tInside, p.site, p.envelope.wallCore, p.envelope.roofCore);
+    wallThk = Math.max(wallThk, rec.wall);
+    roofThk = Math.max(roofThk, rec.roof);
+  }
   return {
     ...p,
     building: { ...a.building, openSides: [annexSharedSide(a)], snowDrift: snowDriftFor(p, a, mainGeo) },
     openings: a.openings,
-    envelope: { ...p.envelope, walls, partitionsArea: 0 },
+    envelope: { ...p.envelope, walls, wallThk, roofThk, roofing: a.building.heated ? 'sandwich' : p.envelope.roofing, partitionsArea: 0 },
     frame: { ...p.frame, step: null, roofScheme: 'auto', crane: { type: 'none', capacity: 0 } },
     stairs: null,
     annexes: [],

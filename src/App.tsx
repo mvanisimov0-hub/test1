@@ -4,7 +4,7 @@ import { PRESETS } from './domain/presets';
 import { vatLabel } from './domain/settings';
 import { CORE_LABEL } from './domain/thermal';
 import { useApp } from './state/store';
-import { PlanDrawing, SectionDrawing } from './ui/Drawings';
+import { DrawingsView } from './ui/DrawingsView';
 import { EstimateView } from './ui/EstimateView';
 import { SANDBOX, downloadJson, safeFileName } from './ui/files';
 import { TECH_LABEL, nf, num, plural, rub, rubShort } from './ui/format';
@@ -47,16 +47,16 @@ function Summary() {
       <div className="summary-inner">
         <div className="kpi">
           <div className="kpi-label">Площадь</div>
-          <div className="kpi-value">{nf(calc.geo.totalFloorArea, 0)} м²</div>
+          <div className="kpi-value">{nf(calc.totals.totalFloorArea, 0)} м²</div>
           <div className="kpi-sub">
-            {num(b.width)}×{num(b.length)}×{num(b.height)} м
+            {num(b.width)}×{num(b.length)}×{num(b.height)} м{calc.blocks.length > 1 ? ` + ${calc.blocks.length - 1} ${plural(calc.blocks.length - 1, 'пристройка', 'пристройки', 'пристроек')}` : ''}
           </div>
         </div>
         <div className="kpi">
           <div className="kpi-label">Каркас</div>
-          <div className="kpi-value">{nf(st.mass.total / 1000, 1)} т</div>
+          <div className="kpi-value">{nf(calc.totals.mass / 1000, 1)} т</div>
           <div className="kpi-sub">
-            {nf(st.mass.kgPerM2, 1)} кг/м² · {st.tech === 'welded' ? 'сварной' : 'КМ/КМД'}
+            {nf(calc.totals.kgPerM2, 1)} кг/м² · {st.tech === 'welded' ? 'сварной' : 'КМ/КМД'}
           </div>
         </div>
         <div className="kpi">
@@ -89,7 +89,7 @@ function Summary() {
 }
 
 function BuildingTab({ go }: { go(tab: Tab): void }) {
-  const { project: p, calc } = useApp();
+  const { project: p, calc, moveOpening } = useApp();
   const st = calc.structure;
   const env = p.envelope;
   const col = st.groups.find((g) => g.key === 'colOuter');
@@ -98,7 +98,7 @@ function BuildingTab({ go }: { go(tab: Tab): void }) {
     <div className="workspace">
       <ParamsPanel />
       <div className="stack sticky result-col">
-        <Viewer3D project={p} calc={calc} />
+        <Viewer3D project={p} calc={calc} onMoveOpening={moveOpening} />
         {calc.warnings.length ? (
           <div className="notice">
             <b>Требует внимания</b>
@@ -143,28 +143,6 @@ function BuildingTab({ go }: { go(tab: Tab): void }) {
           </div>
         </section>
       </div>
-    </div>
-  );
-}
-
-function DrawingsTab() {
-  const { project: p, calc } = useApp();
-  return (
-    <div className="page stack">
-      <h2 style={{ fontSize: 18 }}>Чертежи</h2>
-      <section>
-        <div className="eyebrow" style={{ marginBottom: 6 }}>
-          План в осях
-        </div>
-        <PlanDrawing project={p} calc={calc} />
-      </section>
-      <section>
-        <div className="eyebrow" style={{ marginBottom: 6 }}>
-          Поперечный разрез
-        </div>
-        <SectionDrawing project={p} calc={calc} />
-      </section>
-      <p className="muted small">Фасады с раскладкой панелей и схемы расположения элементов каркаса с маркировкой появятся на втором этапе.</p>
     </div>
   );
 }
@@ -218,7 +196,7 @@ export function App() {
       <main className="main">
         {tab === 'calc' ? <BuildingTab go={go} /> : null}
         {tab === 'tech' ? <TechView /> : null}
-        {tab === 'drawings' ? <DrawingsTab /> : null}
+        {tab === 'drawings' ? <DrawingsView /> : null}
         {tab === 'estimate' ? <EstimateView /> : null}
         {tab === 'kp' ? <ProposalView /> : null}
         {tab === 'prices' ? <PricesView /> : null}

@@ -5,10 +5,11 @@ import { REGIONS, SETTLEMENTS, settlementById } from '../domain/climate';
 import { RAL, ralLabel } from '../domain/colors';
 import { FOUNDATION_LABEL } from '../domain/foundation';
 import { ROMAN, SNOW_DISTRICTS, SNOW_SG, WIND_DISTRICTS, WIND_W0 } from '../domain/loads';
-import { BUILDING_TYPES, PRESETS, applyPreset, siteFromSettlement, uid } from '../domain/presets';
+import { annexExtent, mainWallLength } from '../domain/blocks';
+import { BUILDING_TYPES, PRESETS, applyPreset, newAnnex, siteFromSettlement, uid } from '../domain/presets';
 import { vatLabel } from '../domain/settings';
 import { CORE_LABEL, PANEL_THICKNESS } from '../domain/thermal';
-import type { BuildingType, CoreType, FoundationType, Opening, OpeningKind, Project, WallSide } from '../domain/types';
+import type { Annex, BuildingType, CoreType, FoundationType, Opening, OpeningKind, Project, WallSide } from '../domain/types';
 import { useApp } from '../state/store';
 import { Acc, Check, Field, Num, Seg, Select, Text } from './fields';
 import { TECH_LABEL, num } from './format';
@@ -72,13 +73,26 @@ function Swatches({ value, onChange, label }: { value: string; onChange(v: strin
   );
 }
 
-function OpeningEditor({ o, wallHeight }: { o: Opening; wallHeight: number }) {
+/** Список проёмов, в котором лежит проём с данным id: основное здание или одна из пристроек */
+function openingList(d: Project, id: string): Opening[] | undefined {
+  if (d.openings.some((q) => q.id === id)) return d.openings;
+  return d.annexes.find((a) => a.openings.some((q) => q.id === id))?.openings;
+}
+
+function OpeningEditor({ o, wallHeight, walls = WALLS }: { o: Opening; wallHeight: number; walls?: { value: WallSide; label: string }[] }) {
   const { patch } = useApp();
   const edit = (fn: (x: Opening) => void) =>
     patch((d) => {
-      const x = d.openings.find((q) => q.id === o.id);
+      const x = openingList(d, o.id)?.find((q) => q.id === o.id);
       if (x) fn(x);
     });
+  const remove = () =>
+    patch((d) => {
+      const list = openingList(d, o.id);
+      const i = list?.findIndex((q) => q.id === o.id) ?? -1;
+      if (list && i >= 0) list.splice(i, 1);
+    });
+  const placed = !!o.positions?.some((v) => v != null);
   const tooTall = o.sill + o.h > wallHeight + 0.01 && (o.wall === 'left' || o.wall === 'right');
   return (
     <div className="opening">
@@ -86,7 +100,7 @@ function OpeningEditor({ o, wallHeight }: { o: Opening; wallHeight: number }) {
         <b>
           {KIND_LABEL[o.kind]} {num(o.w)}×{num(o.h)} м{o.qty > 1 ? `, ${o.qty} шт.` : ''}
         </b>
-        <button type="button" className="btn sm ghost danger" onClick={() => patch((d) => void (d.openings = d.openings.filter((q) => q.id !== o.id)))}>
+        <button type="button" className="btn sm ghost danger" onClick={remove}>
           Убрать
         </button>
       </div>
@@ -95,7 +109,16 @@ function OpeningEditor({ o, wallHeight }: { o: Opening; wallHeight: number }) {
           <Select value={o.subtype} options={SUBTYPES[o.kind]} onChange={(v) => edit((x) => void (x.subtype = v))} />
         </Field>
         <Field label="Стена">
-          <Select value={o.wall} options={WALLS} onChange={(v) => edit((x) => void (x.wall = v))} />
+          <Select
+            value={o.wall}
+            options={walls}
+            onChange={(v) =>
+              edit((x) => {
+                x.wall = v;
+                x.positions = undefined;
+              })
+            }
+          />
         </Field>
       </div>
       <div className="fields four" style={{ marginTop: 10 }}>
@@ -106,7 +129,18 @@ function OpeningEditor({ o, wallHeight }: { o: Opening; wallHeight: number }) {
           <Num value={o.h} min={0.4} max={15} unit="м" onChange={(v) => edit((x) => void (x.h = v))} />
         </Field>
         <Field label="Количество">
-          <Num value={o.qty} min={1} max={60} unit="шт" onChange={(v) => edit((x) => void (x.qty = Math.round(v)))} />
+          <Num
+            value={o.qty}
+            min={1}
+            max={60}
+            unit="шт"
+            onChange={(v) =>
+              edit((x) => {
+                x.qty = Math.round(v);
+                x.positions = undefined;
+              })
+            }
+          />
         </Field>
         {o.kind === 'window' ? (
           <Field label="Низ от пола">
@@ -130,7 +164,172 @@ function OpeningEditor({ o, wallHeight }: { o: Opening; wallHeight: number }) {
           Электропривод с автоматикой
         </Check>
       ) : null}
+      {placed ? (
+        <div className="row small muted" style={{ marginTop: 6 }}>
+          <span className="grow">Расставлено мышью.</span>
+          <button type="button" className="btn sm" onClick={() => edit((x) => void (x.positions = undefined))}>
+            Расставить равномерно
+          </button>
+        </div>
+      ) : null}
       {tooTall ? <div className="notice bad small" style={{ marginTop: 8 }}>Проём выше стены ({num(wallHeight, 1)} м).</div> : null}
+    </div>
+  );
+}
+
+const ANNEX_WALLS: Record<Annex['mode'], { value: WallSide; label: string }[]> = {
+  side: [
+    { value: 'right', label: 'Наружная продольная стена' },
+    { value: 'front', label: 'Торец со стороны начала' },
+    { value: 'back', label: 'Торец со стороны конца' },
+  ],
+  end: [
+    { value: 'back', label: 'Дальний торец' },
+    { value: 'left', label: 'Боковая стена 1' },
+    { value: 'right', label: 'Боковая стена 2' },
+  ],
+};
+
+const USE_OPTIONS: { value: BuildingType; label: string }[] = [
+  { value: 'abk', label: 'Офис, бытовые помещения' },
+  { value: 'shop', label: 'Торговое помещение' },
+  { value: 'warehouse', label: 'Склад' },
+  { value: 'production', label: 'Производственное помещение' },
+  { value: 'garage', label: 'Гараж, бокс' },
+];
+
+function AnnexEditor({ a }: { a: Annex }) {
+  const { project: p, patch, calc } = useApp();
+  const edit = (fn: (x: Annex) => void) =>
+    patch((d) => {
+      const x = d.annexes.find((q) => q.id === a.id);
+      if (x) fn(x);
+    });
+  const blk = calc.blocks.find((x) => x.id === a.id);
+  const wallLen = mainWallLength(p.building, a.wall);
+  const ab = a.building;
+  const walls = ANNEX_WALLS[a.mode];
+  const drift = blk?.structure.loads.snowDrift;
+  return (
+    <div className="opening">
+      <div className="opening-head">
+        <input className="input" style={{ height: 30, fontWeight: 600 }} aria-label="Название пристройки" value={a.name} onChange={(e) => edit((x) => void (x.name = e.target.value))} />
+        <button type="button" className="btn sm ghost danger" onClick={() => patch((d) => void (d.annexes = d.annexes.filter((q) => q.id !== a.id)))}>
+          Убрать
+        </button>
+      </div>
+      <div className="fields">
+        <Field label="Примыкает к стене">
+          <Select value={a.wall} options={WALLS} onChange={(v) => edit((x) => void (x.wall = v))} />
+        </Field>
+        <Field label="Привязка вдоль стены" hint={`Стена ${num(wallLen)} м, блок занимает ${num(annexExtent(a))} м`}>
+          <Num value={a.offset} min={0} max={Math.max(0, wallLen)} unit="м" onChange={(v) => edit((x) => void (x.offset = v))} />
+        </Field>
+        <Field label="Расположение" wide hint={a.mode === 'side' ? 'Блок вытянут вдоль стены, скат — от основного здания' : 'Блок примыкает торцом и уходит от стены: крыло Г- или П-образного здания'}>
+          <Seg
+            value={a.mode}
+            label="Расположение пристройки"
+            options={[
+              { value: 'side', label: 'Вдоль стены' },
+              { value: 'end', label: 'Торцом к стене' },
+            ]}
+            onChange={(v) =>
+              edit((x) => {
+                x.mode = v;
+                // стены проёмов переносим на допустимые для нового расположения
+                const ok = ANNEX_WALLS[v].map((w) => w.value);
+                for (const o of x.openings) {
+                  if (!ok.includes(o.wall)) o.wall = ok[0];
+                  o.positions = undefined;
+                }
+              })
+            }
+          />
+        </Field>
+        <Field label={a.mode === 'side' ? 'Вылет от стены (пролёт)' : 'Ширина крыла (пролёт)'}>
+          <Num value={ab.width} min={2} max={60} unit="м" onChange={(v) => edit((x) => void (x.building.width = v))} />
+        </Field>
+        <Field label={a.mode === 'side' ? 'Длина вдоль стены' : 'Длина крыла от стены'}>
+          <Num value={ab.length} min={2} max={200} unit="м" onChange={(v) => edit((x) => void (x.building.length = v))} />
+        </Field>
+        <Field label="Высота до низа конструкций">
+          <Num value={ab.height} min={2} max={20} unit="м" onChange={(v) => edit((x) => void (x.building.height = v))} />
+        </Field>
+        <Field label="Этажей">
+          <Seg
+            value={ab.floors}
+            label="Этажей в пристройке"
+            options={[
+              { value: 1, label: '1' },
+              { value: 2, label: '2' },
+              { value: 3, label: '3' },
+            ]}
+            onChange={(v) => edit((x) => void (x.building.floors = v))}
+          />
+        </Field>
+        <Field label="Кровля">
+          <Seg
+            value={ab.roof}
+            label="Кровля пристройки"
+            options={[
+              { value: 'mono', label: 'Односкатная' },
+              { value: 'gable', label: 'Двускатная' },
+            ]}
+            onChange={(v) => edit((x) => void (x.building.roof = v))}
+          />
+        </Field>
+        <Field label="Уклон">
+          <Num value={ab.slopeDeg} min={3} max={45} unit="°" onChange={(v) => edit((x) => void (x.building.slopeDeg = v))} />
+        </Field>
+        <Field label="Назначение">
+          <Select value={USE_OPTIONS.some((u) => u.value === ab.type) ? ab.type : 'abk'} options={USE_OPTIONS} onChange={(v) => edit((x) => void (x.building.type = v))} />
+        </Field>
+        <Field label="Стены">
+          <Seg
+            value={a.walls ? 'yes' : 'no'}
+            label="Стены пристройки"
+            options={[
+              { value: 'yes', label: 'Со стенами' },
+              { value: 'no', label: 'Навес' },
+            ]}
+            onChange={(v) => edit((x) => void (x.walls = v === 'yes'))}
+          />
+        </Field>
+        <Check checked={ab.heated} onChange={(v) => edit((x) => void (x.building.heated = v))}>
+          Отапливается
+        </Check>
+        {ab.heated ? (
+          <Field label="Температура внутри">
+            <Num value={ab.tInside} min={5} max={28} unit="°C" onChange={(v) => edit((x) => void (x.building.tInside = v))} />
+          </Field>
+        ) : null}
+      </div>
+      {blk ? (
+        <p className="muted small" style={{ margin: '8px 0 0' }}>
+          Каркас {blk.structure.tech === 'welded' ? 'сварной' : 'по КМ/КМД'}, {num(blk.structure.mass.total / 1000, 2)} т; колонны {blk.structure.groups.find((g) => g.key === 'colOuter')?.section ?? '—'}.
+          {blk.project.envelope.walls === 'sandwich' ? ` Панели: стены ${blk.project.envelope.wallThk} мм, кровля ${blk.project.envelope.roofThk} мм.` : ''}
+          {drift ? ` Учтён снеговой мешок у стены основного здания: μ до ${num(drift.mu, 1)} на длине ${num(drift.b, 1)} м.` : ''}
+        </p>
+      ) : null}
+      {a.walls ? (
+        <div style={{ marginTop: 10 }}>
+          <div className="field-label" style={{ marginBottom: 6 }}>
+            Проёмы пристройки
+          </div>
+          {a.openings.map((o) => (
+            <div key={o.id} style={{ marginBottom: 8 }}>
+              <OpeningEditor o={o} wallHeight={blk?.geo.eaveHeight ?? ab.height} walls={walls} />
+            </div>
+          ))}
+          <div className="row">
+            {(['gate', 'door', 'window'] as OpeningKind[]).map((k) => (
+              <button key={k} type="button" className="btn sm" onClick={() => edit((x) => void x.openings.push({ ...NEW_OPENING[k], wall: walls[0].value, id: uid() }))}>
+                + {KIND_LABEL[k]}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -361,6 +560,26 @@ export function ParamsPanel() {
         </div>
       </Acc>
 
+      <Acc
+        title="Пристройки"
+        summary={p.annexes.length ? p.annexes.map((a) => `${a.name} ${num(a.building.width)}×${num(a.building.length)}`).join(' · ') : 'нет'}
+        open={!!open.annex}
+        onToggle={() => toggle('annex')}
+      >
+        <p className="muted small">
+          Пристройка — отдельный блок со своими размерами, высотой и кровлей: АБК вдоль цеха, навес, крыло Г- или П-образного здания. Каркас, фундаменты и панели считаются по каждому блоку и входят в
+          общую смету.
+        </p>
+        {p.annexes.map((a) => (
+          <AnnexEditor key={a.id} a={a} />
+        ))}
+        <div className="row">
+          <button type="button" className="btn sm" onClick={() => patch((d) => void d.annexes.push(newAnnex(d, d.annexes.length + 1)))}>
+            + Пристройка
+          </button>
+        </div>
+      </Acc>
+
       <Acc title="Каркас" summary={`${TECH_LABEL[st.tech]}${st.techAuto ? ' (авто)' : ''} · шаг ${num(st.step, 2)} м`} open={!!open.frame} onToggle={() => toggle('frame')}>
         <div className="fields">
           <Field label="Технология" wide hint={techNote || undefined}>
@@ -581,7 +800,7 @@ export function ParamsPanel() {
                 </button>
               ))}
             </div>
-            <p className="muted small">Проёмы без привязки расставляются равномерно и сдвигаются с колонн. Расстановка мышью появится на втором этапе.</p>
+            <p className="muted small">Проёмы без привязки расставляются равномерно и сдвигаются с колонн. Их можно перетаскивать мышью по стене в 3D-виде или на фасадах в разделе «Чертежи».</p>
           </>
         )}
       </Acc>

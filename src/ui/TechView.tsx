@@ -6,7 +6,7 @@ import { ralLabel } from '../domain/colors';
 import { ROMAN } from '../domain/loads';
 import { CORE_LABEL } from '../domain/thermal';
 import { useApp } from '../state/store';
-import { Util } from './fields';
+import { Seg, Util } from './fields';
 import { SANDBOX } from './files';
 import { SCHEME_LABEL, TECH_LABEL, nf, num, plural, rub } from './format';
 
@@ -38,12 +38,17 @@ export function Gantt() {
 }
 
 export function TechView() {
-  const { project: p, calc, settings, patch } = useApp();
-  const st = calc.structure;
-  const th = calc.thermal;
+  const { project: mainProject, calc, settings, patch } = useApp();
+  const [blockId, setBlockId] = useState('');
+  // записка показывает один блок: основное здание или выбранную пристройку
+  const blk = calc.blocks.find((x) => x.id === blockId) ?? calc.blocks[0];
+  const isMain = blk.id === '';
+  const p = blk.project;
+  const st = blk.structure;
+  const th = blk.thermal;
   const b = p.building;
   const [showSpecParts, setShowSpecParts] = useState(false);
-  const variants = useMemo(() => compareTech(p, settings, calc), [p, settings, calc]);
+  const variants = useMemo(() => compareTech(mainProject, settings, calc), [mainProject, settings, calc]);
   const other = variants.find((v) => !v.selected);
   const current = variants.find((v) => v.selected);
 
@@ -68,6 +73,15 @@ export function TechView() {
           </button>
         ) : null}
       </div>
+
+      {calc.blocks.length > 1 ? (
+        <div className="row no-print">
+          <Seg<string> value={blk.id} label="Блок здания" options={calc.blocks.map((x) => ({ value: x.id, label: x.label }))} onChange={setBlockId} />
+          <span className="muted small">
+            Всего по зданию: {nf(calc.totals.mass / 1000, 2)} т металла, {nf(calc.totals.totalFloorArea, 0)} м²
+          </span>
+        </div>
+      ) : null}
 
       <div className="notice info">
         Расчёт предварительный: подбор сечений по СП 16 на усилия из расчёта рамы методом конечных элементов. Он служит основанием для КП и задания на проектирование. До сверки с
@@ -147,6 +161,15 @@ export function TechView() {
                   <td className="r">{nf(ld.snowN, 2)}</td>
                   <td className="r">{nf(ld.snow, 2)}</td>
                 </tr>
+                {ld.snowDrift ? (
+                  <tr>
+                    <td>
+                      Снеговой мешок у стены основного здания: перепад {nf(ld.snowDrift.h, 1)} м, μ до {nf(ld.snowDrift.mu, 2)} на длине {nf(ld.snowDrift.b, 1)} м
+                    </td>
+                    <td className="r">{nf(ld.sg * ld.snowDrift.mu, 2)}</td>
+                    <td className="r">{nf(ld.sg * ld.snowDrift.mu * 1.4, 2)}</td>
+                  </tr>
+                ) : null}
                 <tr>
                   <td>
                     Ветер, район {p.site.windDistrict}, тип местности {p.site.terrain}; w0 = {num(ld.w0)} кПа, k = {nf(ld.k, 2)}, ζ = {nf(ld.zeta, 2)}, ν = {nf(ld.nu, 2)}
@@ -362,14 +385,14 @@ export function TechView() {
 
       <section className="card">
         <div className="card-head">
-          <h3>Фундаменты: {calc.foundation.title.toLowerCase()}</h3>
+          <h3>Фундаменты: {blk.foundation.title.toLowerCase()}</h3>
           <span className="muted small">
             R0 = {num(p.site.soilR0)} кПа, промерзание {num(p.site.frostDepth)} м
           </span>
         </div>
         <div className="card-body">
           <ul style={{ margin: 0, paddingLeft: 18 }}>
-            {calc.foundation.details.map((d) => (
+            {blk.foundation.details.map((d) => (
               <li key={d}>{d}</li>
             ))}
           </ul>
@@ -408,7 +431,7 @@ export function TechView() {
         </div>
       </section>
 
-      {other && current ? (
+      {isMain && other && current ? (
         <section className="card no-print">
           <div className="card-head">
             <h3>Сравнение технологий каркаса</h3>
@@ -539,7 +562,7 @@ export function TechView() {
                 <>
                   <dt>Площадь стен</dt>
                   <dd className="num">
-                    {nf(calc.geo.wallNet, 0)} м² за вычетом проёмов {nf(calc.geo.openingsArea, 0)} м²
+                    {nf(blk.geo.wallNet, 0)} м² за вычетом проёмов {nf(blk.geo.openingsArea, 0)} м²
                   </dd>
                   <dt>Цвет стен</dt>
                   <dd>{ralLabel(p.envelope.wallColor)}</dd>
@@ -549,15 +572,22 @@ export function TechView() {
               <dd>{p.envelope.roofing === 'sandwich' ? `сэндвич-панели ${p.envelope.roofThk} мм, ${CORE_LABEL[p.envelope.roofCore]}` : 'профлист по прогонам'}</dd>
               <dt>Площадь кровли</dt>
               <dd className="num">
-                {nf(calc.geo.roofArea, 0)} м², уклон {num(b.slopeDeg)}°
+                {nf(blk.geo.roofArea, 0)} м², уклон {num(b.slopeDeg)}°
               </dd>
               <dt>Цвет кровли</dt>
               <dd>{ralLabel(p.envelope.roofColor)}</dd>
               <dt>Фасонные элементы</dt>
-              <dd className="num">{nf(calc.geo.trim.total, 0)} м.п.</dd>
+              <dd className="num">
+                {nf(blk.panels.trimLength, 0)} м.п., {blk.panels.trims.length} видов
+              </dd>
+              <dt>Панели по раскладке</dt>
+              <dd className="num">
+                {blk.panels.wallCount ? `стеновых ${blk.panels.wallCount} шт. (${nf(blk.panels.wallArea, 0)} м²), ` : ''}
+                кровельных {blk.panels.roofCount} шт. ({nf(blk.panels.roofArea, 0)} м²)
+              </dd>
               <dt>Высота стены / конька</dt>
               <dd className="num">
-                {nf(calc.geo.eaveHeight, 2)} / {nf(calc.geo.ridgeHeight, 2)} м
+                {nf(blk.geo.eaveHeight, 2)} / {nf(blk.geo.ridgeHeight, 2)} м
               </dd>
             </dl>
           </div>

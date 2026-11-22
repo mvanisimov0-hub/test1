@@ -146,7 +146,7 @@ export function layoutOpenings(
       slots.forEach((a, s) => {
         const center = ((s + 0.5) * len) / n;
         let u = Math.min(Math.max(center - a.o.w / 2, 0.3), Math.max(0.3, len - a.o.w - 0.3));
-        if (a.o.kind !== 'window' || a.o.sill < 2.5) u = clearOfStops(u, a.o.w, stops?.[wall]);
+        u = clearOfStops(u, a.o.w, stops?.[wall]);
         items.push({ opening: a.o, index: a.i, wall, u, w: a.o.w, h: a.o.h, sill: a.o.sill });
       });
     }

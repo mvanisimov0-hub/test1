@@ -6,7 +6,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { CalcResult } from '../domain/calc';
 import type { Project } from '../domain/types';
 import { Seg } from './fields';
-import { addLights, buildScene, cameraFor, disposeGroup, type SceneTheme, type ViewMode, type ViewPreset } from './scene';
+import { addLights, buildScene, cameraFor, disposeGroup, type OpeningTag, type SceneTheme, type ViewMode, type ViewPreset } from './scene';
 
 const FOV = 32;
 
@@ -56,6 +56,7 @@ const MODES: { value: ViewMode; label: string }[] = [
 
 const VIEWS: { value: ViewPreset; label: string }[] = [
   { value: 'iso', label: 'Общий' },
+  { value: 'back', label: 'С тыла' },
   { value: 'front', label: 'Торец' },
   { value: 'side', label: 'Фасад' },
   { value: 'top', label: 'Сверху' },
@@ -72,7 +73,14 @@ interface Stage {
   dirty: boolean;
 }
 
-export function Viewer3D({ project, calc }: { project: Project; calc: CalcResult }) {
+interface ViewerProps {
+  project: Project;
+  calc: CalcResult;
+  /** перетаскивание проёма по стене: блок, проём, номер в группе, новая привязка */
+  onMoveOpening?: (blockId: string, openingId: string, index: number, u: number) => void;
+}
+
+export function Viewer3D({ project, calc, onMoveOpening }: ViewerProps) {
   const host = useRef<HTMLDivElement>(null);
   const stage = useRef<Stage | null>(null);
   const [mode, setMode] = useState<ViewMode>('clad');
@@ -80,7 +88,10 @@ export function Viewer3D({ project, calc }: { project: Project; calc: CalcResult
   const [failed, setFailed] = useState(false);
   const [themeTick, setThemeTick] = useState(0);
   // ключ габаритов: камера перестраивается только при их изменении, а не при каждой правке
-  const sizeKey = `${project.building.length}|${project.building.width}|${Math.round(calc.geo.ridgeHeight * 10)}`;
+  const sizeKey = `${calc.totals.bounds.map((v) => v.toFixed(1)).join('|')}|${Math.round(calc.totals.height * 10)}`;
+  const moveRef = useRef(onMoveOpening);
+  moveRef.current = onMoveOpening;
+  const [dragInfo, setDragInfo] = useState<string | null>(null);
 
   // создание рендерера
   useEffect(() => {
@@ -106,6 +117,74 @@ export function Viewer3D({ project, calc }: { project: Project; calc: CalcResult
     const s: Stage = { renderer, scene, camera, controls, group: null, lights: [], frame: 0, dirty: true };
     stage.current = s;
     controls.addEventListener('change', () => (s.dirty = true));
+
+    // ── перетаскивание проёмов по стенам ──
+    const ray = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const canvas = renderer.domElement;
+    let drag: { tag: OpeningTag; origin: THREE.Vector3; dir: THREE.Vector3; plane: THREE.Plane; grab: number; last: number } | null = null;
+    const pick = (ev: PointerEvent): { tag: OpeningTag; point: THREE.Vector3; obj: THREE.Object3D } | null => {
+      if (!s.group) return null;
+      const r = canvas.getBoundingClientRect();
+      ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+      ray.setFromCamera(ndc, camera);
+      // линии швов панелей в расчёт не берём: у них широкая зона попадания
+      const hits = ray.intersectObject(s.group, true).filter((h) => (h.object as THREE.Mesh).isMesh);
+      if (!hits.length) return null;
+      // проём считается выбранным, если его «ручка» — ближайшее к камере из того, что под курсором
+      const near = hits[0].distance;
+      for (const h of hits) {
+        if (h.distance > near + 0.35) break;
+        const tag = h.object.userData.opening as OpeningTag | undefined;
+        if (tag) return { tag, point: h.point, obj: h.object };
+      }
+      return null;
+    };
+    const onDown = (ev: PointerEvent) => {
+      if (ev.button !== 0 || !moveRef.current) return;
+      const hit = pick(ev);
+      if (!hit || !hit.obj.parent) return;
+      const m = hit.obj.parent.matrixWorld;
+      const origin = new THREE.Vector3(...hit.tag.origin).applyMatrix4(m);
+      const dir = new THREE.Vector3(...hit.tag.dir).transformDirection(m);
+      const normal = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
+      const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, hit.point);
+      const along = hit.point.clone().sub(origin).dot(dir);
+      drag = { tag: hit.tag, origin, dir, plane, grab: along - hit.tag.u, last: hit.tag.u };
+      controls.enabled = false;
+      canvas.setPointerCapture(ev.pointerId);
+      canvas.style.cursor = 'grabbing';
+      ev.preventDefault();
+    };
+    const onMove = (ev: PointerEvent) => {
+      if (!drag) {
+        if (moveRef.current && ev.buttons === 0) canvas.style.cursor = pick(ev) ? 'grab' : '';
+        return;
+      }
+      const r = canvas.getBoundingClientRect();
+      ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+      ray.setFromCamera(ndc, camera);
+      const pt = new THREE.Vector3();
+      if (!ray.ray.intersectPlane(drag.plane, pt)) return;
+      let u = pt.sub(drag.origin).dot(drag.dir) - drag.grab;
+      u = Math.round(Math.min(Math.max(u, 0), Math.max(0, drag.tag.wallLen - drag.tag.w)) * 20) / 20;
+      if (Math.abs(u - drag.last) < 1e-6) return;
+      drag.last = u;
+      setDragInfo(`Привязка от начала стены: ${u.toFixed(2).replace('.', ',')} м`);
+      moveRef.current?.(drag.tag.blockId, drag.tag.openingId, drag.tag.index, u);
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (!drag) return;
+      drag = null;
+      controls.enabled = true;
+      canvas.style.cursor = '';
+      setDragInfo(null);
+      if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+    };
+    canvas.addEventListener('pointerdown', onDown, true);
+    canvas.addEventListener('pointermove', onMove);
+    canvas.addEventListener('pointerup', onUp);
+    canvas.addEventListener('pointercancel', onUp);
 
     const resize = () => {
       const w = el.clientWidth;
@@ -139,6 +218,10 @@ export function Viewer3D({ project, calc }: { project: Project; calc: CalcResult
 
     return () => {
       cancelAnimationFrame(s.frame);
+      canvas.removeEventListener('pointerdown', onDown, true);
+      canvas.removeEventListener('pointermove', onMove);
+      canvas.removeEventListener('pointerup', onUp);
+      canvas.removeEventListener('pointercancel', onUp);
       ro.disconnect();
       mq.removeEventListener('change', onTheme);
       mo.disconnect();
@@ -165,6 +248,7 @@ export function Viewer3D({ project, calc }: { project: Project; calc: CalcResult
     s.lights = s.scene.children.filter((c) => !before.has(c));
     s.group = buildScene(project, calc, mode, readTheme(el));
     s.scene.add(s.group);
+    s.scene.updateMatrixWorld(true);
     s.dirty = true;
   }, [project, calc, mode, themeTick]);
 
@@ -192,7 +276,9 @@ export function Viewer3D({ project, calc }: { project: Project; calc: CalcResult
             <Seg<ViewPreset> value={view} options={VIEWS} onChange={setView} label="Вид" />
           </div>
           <div className="viewer-bar bottom">
-            <span className="viewer-caption">Вращение — левая кнопка мыши, сдвиг — правая, масштаб — колесо</span>
+            <span className="viewer-caption">
+              {dragInfo ?? (onMoveOpening ? 'Проёмы перетаскиваются мышью по стене. Вращение — левая кнопка, сдвиг — правая, масштаб — колесо' : 'Вращение — левая кнопка мыши, сдвиг — правая, масштаб — колесо')}
+            </span>
           </div>
         </>
       )}

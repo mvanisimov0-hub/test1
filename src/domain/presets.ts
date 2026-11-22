@@ -298,12 +298,16 @@ export function newProject(type: BuildingType = 'hangar', entityId = ''): Projec
 export function newAnnex(p: Project, index: number): Annex {
   const main = p.building;
   const length = Math.min(12, main.length);
+  // новая пристройка встаёт на свободное место: за уже стоящими на той же стене или на противоположной
+  const busy = (wall: 'right' | 'left') => Math.max(0, ...p.annexes.filter((a) => a.wall === wall).map((a) => a.offset + (a.mode === 'side' ? a.building.length : a.building.width)));
+  const wall = busy('right') + length <= main.length + 1e-6 ? 'right' : 'left';
+  const offset = busy(wall) + length <= main.length + 1e-6 ? busy(wall) : 0;
   return {
     id: uid(),
     name: `Пристройка ${index}`,
-    wall: 'right',
+    wall,
     mode: 'side',
-    offset: 0,
+    offset,
     building: {
       type: 'abk',
       width: 6,
