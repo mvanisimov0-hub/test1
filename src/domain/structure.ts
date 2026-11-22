@@ -98,8 +98,8 @@ export function resolveTech(p: Project): TechDecision {
   const b = p.building;
   const ls = spanLength(b);
   const against: string[] = [];
-  if (ls > WELDED_LIMITS.span) against.push(`пролёт ${ls.toFixed(1)} м больше ${WELDED_LIMITS.span} м`);
-  if (b.height > WELDED_LIMITS.height) against.push(`высота ${b.height.toFixed(1)} м больше ${WELDED_LIMITS.height} м`);
+  if (ls > WELDED_LIMITS.span) against.push(`пролёт ${ls.toFixed(1).replace('.', ',')} м больше ${WELDED_LIMITS.span} м`);
+  if (b.height > WELDED_LIMITS.height) against.push(`высота ${b.height.toFixed(1).replace('.', ',')} м больше ${WELDED_LIMITS.height} м`);
   if (b.floors > WELDED_LIMITS.floors) against.push(`этажей больше ${WELDED_LIMITS.floors}`);
   if (p.frame.crane.type === 'bridge') against.push('опорный мостовой кран');
   const recommended: FrameTech = against.length ? 'kmd' : 'welded';

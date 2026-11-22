@@ -1,0 +1,61 @@
+/* Разделы «Цены и настройки» и «Расчёты» */
+.admin-toolbar {
+  display: flex;
+  gap: 8px 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.admin-toolbar .input {
+  flex: 1 1 200px;
+  max-width: 340px;
+}
+
+.admin-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.admin-confirm {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.price-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.price-reset {
+  width: 26px;
+  padding: 2px 0;
+  line-height: 1.2;
+}
+
+.logo-box {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.logo-preview {
+  max-height: 56px;
+  max-width: 220px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: #ffffff;
+  padding: 4px;
+  display: block;
+}
+
+.entity-card + .entity-card {
+  margin-top: 12px;
+}
